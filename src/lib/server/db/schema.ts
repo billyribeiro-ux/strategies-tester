@@ -79,7 +79,17 @@ export const candleCache = sqliteTable(
 	(t) => [uniqueIndex('candle_cache_uq').on(t.symbol, t.timeframe, t.fromDate, t.toDate)]
 );
 
+/** Singleton key/value settings (e.g. the FMP API key entered in the UI). */
+export const settings = sqliteTable('settings', {
+	key: text('key').primaryKey(),
+	value: text('value').notNull(),
+	updatedAt: text('updated_at')
+		.notNull()
+		.default(sql`(current_timestamp)`)
+});
+
 export type StrategyRow = typeof strategies.$inferSelect;
 export type StrategyVersionRow = typeof strategyVersions.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type CandleCacheRow = typeof candleCache.$inferSelect;
+export type SettingRow = typeof settings.$inferSelect;

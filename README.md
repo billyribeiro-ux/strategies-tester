@@ -37,7 +37,9 @@ pnpm db:migrate
 pnpm dev            # http://localhost:5173 → /backtest
 ```
 
-> Without `FMP_API_KEY`, the app still runs and the builder works; running a backtest returns a clear `502` ("Market data unavailable"). Everything except live data fetches is exercisable.
+You can provide the FMP key two ways: the `FMP_API_KEY` env var (above), or **in-app at `/settings`** — type it there and it's stored server-side (local SQLite) and takes precedence over the env var. The Settings page also has a **Test connection** button. The key is never sent back to the browser.
+
+> Without a key, the app still runs and the builder works; running a backtest returns a clear `502` ("Market data unavailable"). Everything except live data fetches is exercisable.
 
 ## Scripts
 

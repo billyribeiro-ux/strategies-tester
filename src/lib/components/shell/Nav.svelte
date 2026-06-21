@@ -11,7 +11,8 @@
 	const links: readonly NavLink[] = [
 		{ href: '/', label: 'Home' },
 		{ href: '/backtest', label: 'Builder' },
-		{ href: '/strategies', label: 'Strategies' }
+		{ href: '/strategies', label: 'Strategies' },
+		{ href: '/settings', label: 'Settings' }
 	];
 
 	/** A link is active when the path matches exactly, or is a sub-path

@@ -16,6 +16,7 @@ import { env } from '$env/dynamic/private';
 import type { Candle, SessionSpec } from '$lib/types';
 import { db } from '../db';
 import { candleCache } from '../db/schema';
+import { FMP_KEY, getSetting } from '../db/repository';
 import { createId } from '$lib/utils/id';
 
 export type FetchFn = typeof fetch;
@@ -51,6 +52,54 @@ const INTRADAY_INTERVAL: Record<string, string> = {
 const BASE = 'https://financialmodelingprep.com/stable';
 
 // ---------------------------------------------------------------------------
+// API key resolution + verification
+// ---------------------------------------------------------------------------
+
+/** Resolved key: a UI-saved key (DB) takes precedence over the env var. */
+function resolveApiKey(): string | null {
+	return getSetting(FMP_KEY) ?? env.FMP_API_KEY ?? null;
+}
+
+/** Where the active FMP key comes from — for the Settings UI. Never the key itself. */
+export function fmpKeyStatus(): { fmpKeySet: boolean; source: 'db' | 'env' | 'none' } {
+	if (getSetting(FMP_KEY)) return { fmpKeySet: true, source: 'db' };
+	if (env.FMP_API_KEY) return { fmpKeySet: true, source: 'env' };
+	return { fmpKeySet: false, source: 'none' };
+}
+
+/** Validate the active key with one minimal, uncached FMP request. */
+export async function verifyFmpKey(
+	fetchFn: FetchFn = fetch
+): Promise<{ ok: boolean; message: string }> {
+	const apiKey = resolveApiKey();
+	if (!apiKey) return { ok: false, message: 'No FMP API key configured.' };
+	const to = new Date().toISOString().slice(0, 10);
+	const from = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+	const url = `${BASE}/historical-price-eod/full?symbol=AAPL&from=${from}&to=${to}&apikey=${encodeURIComponent(apiKey)}`;
+	let res: Response;
+	try {
+		res = await fetchFn(url);
+	} catch {
+		return { ok: false, message: 'Could not reach the market-data provider.' };
+	}
+	if (res.status === 401 || res.status === 403) {
+		return { ok: false, message: 'FMP rejected the key (unauthorized).' };
+	}
+	if (!res.ok) return { ok: false, message: `FMP returned HTTP ${res.status}.` };
+	let body: unknown;
+	try {
+		body = await res.json();
+	} catch {
+		return { ok: false, message: 'FMP returned an unexpected response.' };
+	}
+	if (body && typeof body === 'object' && !Array.isArray(body)) {
+		const msg = (body as Record<string, unknown>)['Error Message'];
+		if (typeof msg === 'string') return { ok: false, message: msg };
+	}
+	return { ok: true, message: 'API key is valid.' };
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -63,9 +112,9 @@ export async function fetchCandles(
 	const cached = readCache(symbol, timeframe, from, to);
 	if (cached) return cached;
 
-	const apiKey = env.FMP_API_KEY;
+	const apiKey = resolveApiKey();
 	if (!apiKey) {
-		throw new Error('FMP_API_KEY is not configured on the server.');
+		throw new Error('FMP API key is not configured. Add it in Settings (or set FMP_API_KEY).');
 	}
 
 	let candles: Candle[];

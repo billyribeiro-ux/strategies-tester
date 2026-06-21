@@ -18,6 +18,7 @@ import type {
 import { db } from '.';
 import {
 	runs,
+	settings,
 	strategies,
 	strategyVersions,
 	type RunRow,
@@ -210,4 +211,28 @@ export function runSummary(row: RunRow): RunSummary {
 		maxDrawdown: row.maxDrawdown,
 		totalTrades: row.totalTrades
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Settings (key/value)
+// ---------------------------------------------------------------------------
+
+/** Setting key under which the user-provided FMP API key is stored. */
+export const FMP_KEY = 'fmpApiKey';
+
+export function getSetting(key: string): string | null {
+	const row = db.select().from(settings).where(eq(settings.key, key)).limit(1).all()[0];
+	return row ? row.value : null;
+}
+
+export function setSetting(key: string, value: string): void {
+	const now = new Date().toISOString();
+	db.insert(settings)
+		.values({ key, value, updatedAt: now })
+		.onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: now } })
+		.run();
+}
+
+export function deleteSetting(key: string): boolean {
+	return db.delete(settings).where(eq(settings.key, key)).run().changes > 0;
 }

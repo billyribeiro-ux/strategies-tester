@@ -83,6 +83,11 @@ export interface CandleQuery {
 	from: string;
 	to: string;
 }
+export interface SettingsStatus {
+	/** Whether an FMP key is available (via Settings or env). Never the key itself. */
+	fmpKeySet: boolean;
+	source: 'db' | 'env' | 'none';
+}
 
 // ---------------------------------------------------------------------------
 // Client
@@ -132,7 +137,21 @@ export function createApiClient(fetchFn: FetchFn = fetch) {
 			),
 
 		listVersions: (id: string) =>
-			request<SavedStrategy[]>(fetchFn, 'GET', `/api/strategies/${encodeURIComponent(id)}/versions`)
+			request<SavedStrategy[]>(
+				fetchFn,
+				'GET',
+				`/api/strategies/${encodeURIComponent(id)}/versions`
+			),
+
+		getSettings: () => request<SettingsStatus>(fetchFn, 'GET', '/api/settings'),
+
+		saveSettings: (fmpKey: string) =>
+			request<SettingsStatus>(fetchFn, 'PUT', '/api/settings', { fmpKey }),
+
+		clearSettings: () => request<{ ok: true }>(fetchFn, 'DELETE', '/api/settings'),
+
+		testFmpKey: () =>
+			request<{ ok: boolean; message: string }>(fetchFn, 'POST', '/api/settings/test')
 	};
 }
 
