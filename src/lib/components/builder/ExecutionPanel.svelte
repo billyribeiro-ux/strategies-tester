@@ -49,20 +49,22 @@
 
 	<div class="grid">
 		<Field label="Fill on">
-			<div class="seg-row" role="radiogroup" aria-label="Fill model">
-				{#each fillOptions as opt (opt.value)}
-					<button
-						type="button"
-						class="seg-opt"
-						class:active={fillOn === opt.value}
-						role="radio"
-						aria-checked={fillOn === opt.value}
-						onclick={() => store.setFillModel(opt.value as FillModel)}
-					>
-						{opt.label}
-					</button>
-				{/each}
-			</div>
+			{#snippet children({ id })}
+				<div {id} class="seg-row" role="radiogroup" aria-label="Fill model">
+					{#each fillOptions as opt (opt.value)}
+						<button
+							type="button"
+							class="seg-opt"
+							class:active={fillOn === opt.value}
+							role="radio"
+							aria-checked={fillOn === opt.value}
+							onclick={() => store.setFillModel(opt.value as FillModel)}
+						>
+							{opt.label}
+						</button>
+					{/each}
+				</div>
+			{/snippet}
 		</Field>
 
 		<Select

@@ -5,10 +5,11 @@
 		disabled?: boolean;
 	}
 	let { checked = $bindable(false), label, disabled = false }: Props = $props();
+	const uid = $props.id();
 </script>
 
-<label class="toggle" class:disabled>
-	<input type="checkbox" role="switch" bind:checked {disabled} />
+<label class="toggle" class:disabled for={uid}>
+	<input id={uid} type="checkbox" role="switch" bind:checked {disabled} />
 	<span class="track"><span class="thumb"></span></span>
 	{#if label}<span class="lbl">{label}</span>{/if}
 </label>

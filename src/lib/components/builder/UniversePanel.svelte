@@ -236,36 +236,39 @@
 
 		<!-- Date range -->
 		<Field label="Backtest period" error={dateError}>
-			<div class="dates">
-				<div class="date-inputs">
-					<input
-						type="date"
-						class="date-input"
-						aria-label="From date"
-						value={store.spec.universe.dateRange.from}
-						max={store.spec.universe.dateRange.to}
-						onchange={(e) =>
-							store.setDateRange(e.currentTarget.value, store.spec.universe.dateRange.to)}
-					/>
-					<span class="date-sep" aria-hidden="true">→</span>
-					<input
-						type="date"
-						class="date-input"
-						aria-label="To date"
-						value={store.spec.universe.dateRange.to}
-						min={store.spec.universe.dateRange.from}
-						onchange={(e) =>
-							store.setDateRange(store.spec.universe.dateRange.from, e.currentTarget.value)}
-					/>
+			{#snippet children({ id })}
+				<div class="dates">
+					<div class="date-inputs">
+						<input
+							{id}
+							type="date"
+							class="date-input"
+							aria-label="From date"
+							value={store.spec.universe.dateRange.from}
+							max={store.spec.universe.dateRange.to}
+							onchange={(e) =>
+								store.setDateRange(e.currentTarget.value, store.spec.universe.dateRange.to)}
+						/>
+						<span class="date-sep" aria-hidden="true">→</span>
+						<input
+							type="date"
+							class="date-input"
+							aria-label="To date"
+							value={store.spec.universe.dateRange.to}
+							min={store.spec.universe.dateRange.from}
+							onchange={(e) =>
+								store.setDateRange(store.spec.universe.dateRange.from, e.currentTarget.value)}
+						/>
+					</div>
+					<div class="presets" role="group" aria-label="Date range presets">
+						{#each presets as preset (preset.id)}
+							<button type="button" class="preset" onclick={() => applyPreset(preset.id)}>
+								{preset.label}
+							</button>
+						{/each}
+					</div>
 				</div>
-				<div class="presets" role="group" aria-label="Date range presets">
-					{#each presets as preset (preset.id)}
-						<button type="button" class="preset" onclick={() => applyPreset(preset.id)}>
-							{preset.label}
-						</button>
-					{/each}
-				</div>
-			</div>
+			{/snippet}
 		</Field>
 	</div>
 </div>

@@ -61,6 +61,7 @@
 		<input
 			bind:this={fileInput}
 			type="file"
+			name="import-json"
 			accept="application/json,.json"
 			class="sr-only"
 			aria-hidden="true"
