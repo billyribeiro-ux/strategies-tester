@@ -43,7 +43,8 @@ pnpm dev            # http://localhost:5173 → /backtest
 
 | Script                                                    | Purpose                                   |
 | --------------------------------------------------------- | ----------------------------------------- |
-| `pnpm dev`                                                | Dev server                                |
+| `pnpm dev`                                                | Dev server (UI + API + engine + DB)       |
+| `pnpm dev:all`                                            | Migrate DB, then start the dev server     |
 | `pnpm build` / `pnpm preview`                             | Production build (adapter-node) / preview |
 | `pnpm check`                                              | `svelte-check` (strict typecheck)         |
 | `pnpm test`                                               | Vitest unit suite                         |
