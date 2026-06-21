@@ -36,34 +36,48 @@ export interface DrawdownPoint {
 export type TradeSide = 'long' | 'short';
 
 export type ExitReason =
-	| 'signal'
-	| 'stopLoss'
-	| 'takeProfit'
+	| 'stopHit'
+	| 'targetHit'
 	| 'trailingStop'
+	| 'signalExit'
 	| 'endOfData';
 
 export const EXIT_REASONS: readonly ExitReason[] = [
-	'signal',
-	'stopLoss',
-	'takeProfit',
+	'stopHit',
+	'targetHit',
 	'trailingStop',
+	'signalExit',
 	'endOfData'
 ] as const;
+
+export const EXIT_REASON_LABELS: Record<ExitReason, string> = {
+	stopHit: 'Stop hit',
+	targetHit: 'Target hit',
+	trailingStop: 'Trailing stop',
+	signalExit: 'Signal exit',
+	endOfData: 'End of data'
+};
 
 export interface Trade {
 	id: string;
 	ticker: string;
 	side: TradeSide;
-	entryTime: string;
+	entryTime: string; // ISO; UI splits into entry date + entry time columns
 	entryPrice: number;
-	exitTime: string;
+	exitTime: string; // ISO; UI splits into exit date + exit time columns
 	exitPrice: number;
 	qty: number;
+	/** Stop price at entry, or null when the trade had no stop. */
+	stopPrice: number | null;
+	/** Target price at entry, or null when the trade had no target. */
+	targetPrice: number | null;
 	pnl: number; // realized P&L in currency, net of costs
 	pnlPct: number; // fraction of entry notional
 	rMultiple: number; // P&L in units of initial risk (NaN if no stop)
-	mae: number; // maximum adverse excursion, fraction
-	mfe: number; // maximum favorable excursion, fraction
+	/** Running realized P&L through this trade, in chronological order. */
+	cumulativePnl: number;
+	mae: number; // maximum adverse excursion, fraction (<= 0)
+	mfe: number; // maximum favorable excursion, fraction (>= 0)
 	exitReason: ExitReason;
 	barsHeld: number;
 }
