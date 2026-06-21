@@ -1,0 +1,253 @@
+/*
+ * Global design tokens + base styles.
+ *
+ * Styling approach: Svelte component-scoped <style> blocks everywhere.
+ * This file is the ONLY global stylesheet — it declares design tokens as
+ * CSS custom properties (OKLCH) plus a minimal reset/base. Components read
+ * the tokens via var(--…); they never use utility classes.
+ *
+ * Standard breakpoints (use directly in component @media queries):
+ *   sm 40rem (640px) · md 48rem (768px) · lg 64rem (1024px)
+ *   xl 80rem (1280px) · 2xl 96rem (1536px)
+ */
+
+:root {
+	color-scheme: light dark;
+
+	/* ---- Neutral ramp (OKLCH) ---- */
+	--c-bg: oklch(98.5% 0.004 250);
+	--c-surface: oklch(100% 0 0);
+	--c-surface-2: oklch(96.5% 0.006 250);
+	--c-surface-3: oklch(93.5% 0.008 250);
+	--c-border: oklch(90% 0.01 250);
+	--c-border-strong: oklch(82% 0.015 250);
+	--c-text: oklch(25% 0.02 265);
+	--c-text-muted: oklch(50% 0.02 265);
+	--c-text-faint: oklch(62% 0.015 265);
+
+	/* ---- Brand / semantic ---- */
+	--c-primary: oklch(58% 0.17 264);
+	--c-primary-hover: oklch(52% 0.17 264);
+	--c-primary-contrast: oklch(99% 0 0);
+	--c-primary-soft: oklch(95% 0.04 264);
+
+	--c-long: oklch(62% 0.16 155); /* bullish / gains */
+	--c-long-soft: oklch(95% 0.05 155);
+	--c-short: oklch(60% 0.2 25); /* bearish / losses */
+	--c-short-soft: oklch(95% 0.05 25);
+	--c-warning: oklch(75% 0.16 75);
+	--c-warning-soft: oklch(96% 0.05 75);
+	--c-accent: oklch(64% 0.15 300);
+
+	--c-danger: var(--c-short);
+	--c-danger-soft: var(--c-short-soft);
+	--c-success: var(--c-long);
+	--c-success-soft: var(--c-long-soft);
+
+	/* ---- Typography ---- */
+	--font-sans:
+		ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+	--font-mono:
+		ui-monospace, 'SF Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, monospace;
+	--fs-xs: 0.75rem;
+	--fs-sm: 0.8125rem;
+	--fs-base: 0.875rem;
+	--fs-md: 1rem;
+	--fs-lg: 1.125rem;
+	--fs-xl: 1.375rem;
+	--fs-2xl: 1.75rem;
+	--fs-3xl: 2.25rem;
+	--lh-tight: 1.2;
+	--lh-normal: 1.5;
+
+	/* ---- Spacing (4px base) ---- */
+	--sp-1: 0.25rem;
+	--sp-2: 0.5rem;
+	--sp-3: 0.75rem;
+	--sp-4: 1rem;
+	--sp-5: 1.25rem;
+	--sp-6: 1.5rem;
+	--sp-8: 2rem;
+	--sp-10: 2.5rem;
+	--sp-12: 3rem;
+	--sp-16: 4rem;
+
+	/* ---- Radii ---- */
+	--radius-sm: 0.25rem;
+	--radius: 0.5rem;
+	--radius-lg: 0.75rem;
+	--radius-xl: 1rem;
+	--radius-full: 9999px;
+
+	/* ---- Elevation ---- */
+	--shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.06);
+	--shadow: 0 1px 3px oklch(0% 0 0 / 0.1), 0 1px 2px oklch(0% 0 0 / 0.06);
+	--shadow-lg: 0 10px 24px oklch(0% 0 0 / 0.12), 0 4px 8px oklch(0% 0 0 / 0.06);
+
+	/* ---- Motion ---- */
+	--ease: cubic-bezier(0.4, 0, 0.2, 1);
+	--dur-fast: 120ms;
+	--dur: 200ms;
+
+	/* ---- Layout ---- */
+	--z-base: 0;
+	--z-sticky: 100;
+	--z-dropdown: 200;
+	--z-modal: 400;
+	--z-toast: 600;
+	--header-h: 3.5rem;
+	--focus-ring: 0 0 0 2px var(--c-bg), 0 0 0 4px var(--c-primary);
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--c-bg: oklch(20% 0.012 265);
+		--c-surface: oklch(24% 0.014 265);
+		--c-surface-2: oklch(27.5% 0.016 265);
+		--c-surface-3: oklch(31% 0.018 265);
+		--c-border: oklch(34% 0.018 265);
+		--c-border-strong: oklch(44% 0.02 265);
+		--c-text: oklch(95% 0.01 265);
+		--c-text-muted: oklch(74% 0.018 265);
+		--c-text-faint: oklch(60% 0.018 265);
+
+		--c-primary: oklch(70% 0.15 264);
+		--c-primary-hover: oklch(76% 0.15 264);
+		--c-primary-contrast: oklch(18% 0.02 265);
+		--c-primary-soft: oklch(34% 0.07 264);
+
+		--c-long: oklch(72% 0.16 155);
+		--c-long-soft: oklch(33% 0.07 155);
+		--c-short: oklch(70% 0.18 25);
+		--c-short-soft: oklch(33% 0.08 25);
+		--c-warning: oklch(80% 0.15 75);
+		--c-warning-soft: oklch(36% 0.07 75);
+		--c-accent: oklch(74% 0.14 300);
+
+		--shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.3);
+		--shadow: 0 1px 3px oklch(0% 0 0 / 0.4), 0 1px 2px oklch(0% 0 0 / 0.3);
+		--shadow-lg: 0 10px 28px oklch(0% 0 0 / 0.55), 0 4px 10px oklch(0% 0 0 / 0.4);
+	}
+}
+
+/* Manual theme override (data-theme on <html>) wins over the media query. */
+:root[data-theme='light'] {
+	color-scheme: light;
+}
+:root[data-theme='dark'] {
+	color-scheme: dark;
+	--c-bg: oklch(20% 0.012 265);
+	--c-surface: oklch(24% 0.014 265);
+	--c-surface-2: oklch(27.5% 0.016 265);
+	--c-surface-3: oklch(31% 0.018 265);
+	--c-border: oklch(34% 0.018 265);
+	--c-border-strong: oklch(44% 0.02 265);
+	--c-text: oklch(95% 0.01 265);
+	--c-text-muted: oklch(74% 0.018 265);
+	--c-text-faint: oklch(60% 0.018 265);
+	--c-primary: oklch(70% 0.15 264);
+	--c-primary-hover: oklch(76% 0.15 264);
+	--c-primary-contrast: oklch(18% 0.02 265);
+	--c-primary-soft: oklch(34% 0.07 264);
+	--c-long: oklch(72% 0.16 155);
+	--c-long-soft: oklch(33% 0.07 155);
+	--c-short: oklch(70% 0.18 25);
+	--c-short-soft: oklch(33% 0.08 25);
+}
+
+/* ---- Reset / base ---- */
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+* {
+	margin: 0;
+}
+
+html {
+	font-family: var(--font-sans);
+	font-size: 16px;
+	line-height: var(--lh-normal);
+	-webkit-text-size-adjust: 100%;
+	text-rendering: optimizeLegibility;
+	-webkit-font-smoothing: antialiased;
+}
+
+body {
+	min-height: 100dvh;
+	background: var(--c-bg);
+	color: var(--c-text);
+	font-size: var(--fs-base);
+}
+
+h1,
+h2,
+h3,
+h4 {
+	line-height: var(--lh-tight);
+	font-weight: 600;
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+	color: inherit;
+}
+
+button {
+	cursor: pointer;
+}
+
+a {
+	color: var(--c-primary);
+	text-decoration: none;
+}
+a:hover {
+	text-decoration: underline;
+}
+
+img,
+svg {
+	display: block;
+	max-width: 100%;
+}
+
+/* Accessible focus ring for keyboard users only. */
+:focus-visible {
+	outline: none;
+	box-shadow: var(--focus-ring);
+	border-radius: var(--radius-sm);
+}
+
+.tabular {
+	font-variant-numeric: tabular-nums;
+	font-family: var(--font-mono);
+}
+
+/* Visually hidden but available to assistive tech. */
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}
