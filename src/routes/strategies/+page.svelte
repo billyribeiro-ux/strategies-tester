@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import type { SavedStrategy, StrategySpec } from '$lib/types';
+	import { untrack } from 'svelte';
 	import { StrategiesStore } from '$lib/stores/strategies.svelte';
 	import {
 		Button,
@@ -19,7 +20,9 @@
 	let { data }: { data: PageData } = $props();
 
 	const store = new StrategiesStore();
-	// Seed from server-loaded data; re-seed if the load result changes.
+	// Seed synchronously so SSR and the first client render show the list;
+	// re-seed on navigation/invalidation when the load result changes.
+	untrack(() => store.init(data.strategies));
 	$effect(() => {
 		store.init(data.strategies);
 	});

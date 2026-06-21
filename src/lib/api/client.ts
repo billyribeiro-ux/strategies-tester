@@ -44,8 +44,18 @@ async function request<T>(
 		throw new ApiError(0, 'Network error — could not reach the server.', cause);
 	}
 
-	const isJson = res.headers.get('content-type')?.includes('application/json');
-	const payload = isJson ? await res.json().catch(() => undefined) : await res.text().catch(() => undefined);
+	// Read the body as text and try to parse JSON. We deliberately avoid reading
+	// the `content-type` response header: during SSR, SvelteKit restricts which
+	// internal-fetch headers a `load` may read and throws on others.
+	const text = await res.text().catch(() => '');
+	let payload: unknown = text.length ? text : undefined;
+	if (text.length) {
+		try {
+			payload = JSON.parse(text);
+		} catch {
+			payload = text;
+		}
+	}
 
 	if (!res.ok) {
 		const message =

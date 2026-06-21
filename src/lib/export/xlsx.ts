@@ -9,7 +9,9 @@
  * aggregation of the given trades (no simulation).
  */
 
-import { Workbook, type Worksheet, type Fill } from 'exceljs';
+// Type-only import — the ExcelJS runtime is loaded lazily in `buildWorkbook` so
+// it never enters the SSR/server module graph (it's a browser-only export path).
+import type { Workbook, Worksheet, Fill } from 'exceljs';
 import type { BacktestResult, MetricValue, Trade } from '$lib/types';
 import { EXIT_REASON_LABELS } from '$lib/types';
 import { computeTotals, type LedgerTotals } from './ledger';
@@ -212,6 +214,7 @@ function buildEquitySheet(wb: Workbook, result: BacktestResult): void {
 
 /** Build the workbook as a transferable ArrayBuffer. */
 export async function buildWorkbook(result: BacktestResult): Promise<ArrayBuffer> {
+	const { Workbook } = await import('exceljs');
 	const wb = new Workbook();
 	wb.creator = 'Strategies Tester';
 	wb.created = new Date();
