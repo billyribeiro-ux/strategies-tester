@@ -81,6 +81,7 @@
 			<input
 				bind:this={fileInput}
 				type="file"
+				name="import-file"
 				accept="application/json,.json"
 				class="sr-only"
 				onchange={onFile}

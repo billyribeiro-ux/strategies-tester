@@ -6,13 +6,30 @@
 		hint?: string;
 		error?: string;
 		required?: boolean;
+		/**
+		 * Set to true when the labeled element is not a native form control
+		 * (e.g. a div with role="radiogroup"). The label's `for` attribute is
+		 * omitted and `labelId` is exposed in the snippet so the consumer can
+		 * wire up `aria-labelledby` instead.
+		 */
+		noFor?: boolean;
 		/** Receives wiring to apply to the control for a11y. */
-		children: Snippet<[{ id: string; describedBy: string | undefined; invalid: boolean }]>;
+		children: Snippet<
+			[
+				{
+					id: string;
+					labelId: string | undefined;
+					describedBy: string | undefined;
+					invalid: boolean;
+				}
+			]
+		>;
 	}
-	let { label, hint, error, required = false, children }: Props = $props();
+	let { label, hint, error, required = false, noFor = false, children }: Props = $props();
 
 	const uid = $props.id();
 	const controlId = `${uid}-control`;
+	const labelId = label ? `${uid}-label` : undefined;
 	let describedBy = $derived(
 		[hint ? `${uid}-hint` : null, error ? `${uid}-error` : null].filter(Boolean).join(' ') ||
 			undefined
@@ -22,11 +39,11 @@
 
 <div class="field" class:invalid>
 	{#if label}
-		<label for={controlId}>
+		<label id={labelId} for={noFor ? undefined : controlId}>
 			{label}{#if required}<span class="req" aria-hidden="true">*</span>{/if}
 		</label>
 	{/if}
-	{@render children({ id: controlId, describedBy, invalid })}
+	{@render children({ id: controlId, labelId, describedBy, invalid })}
 	{#if error}
 		<p class="msg error" id="{uid}-error">{error}</p>
 	{:else if hint}

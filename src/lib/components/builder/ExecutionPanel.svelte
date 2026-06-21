@@ -48,9 +48,9 @@
 	{#snippet icon()}<Lightning size={18} />{/snippet}
 
 	<div class="grid">
-		<Field label="Fill on">
-			{#snippet children({ id })}
-				<div {id} class="seg-row" role="radiogroup" aria-label="Fill model">
+		<Field label="Fill on" noFor>
+			{#snippet children({ labelId })}
+				<div class="seg-row" role="radiogroup" aria-labelledby={labelId}>
 					{#each fillOptions as opt (opt.value)}
 						<button
 							type="button"
