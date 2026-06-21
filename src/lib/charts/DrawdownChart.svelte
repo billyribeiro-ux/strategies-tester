@@ -51,14 +51,17 @@
 
 	const linePath = $derived(
 		points.length
-			? 'M' + points.map((p) => `${xScale(p.date).toFixed(2)},${yScale(p.value).toFixed(2)}`).join('L')
+			? 'M' +
+					points.map((p) => `${xScale(p.date).toFixed(2)},${yScale(p.value).toFixed(2)}`).join('L')
 			: ''
 	);
 	const areaPath = $derived(
 		points.length
 			? `M${xScale(points[0].date).toFixed(2)},${zeroY.toFixed(2)}` +
 					'L' +
-					points.map((p) => `${xScale(p.date).toFixed(2)},${yScale(p.value).toFixed(2)}`).join('L') +
+					points
+						.map((p) => `${xScale(p.date).toFixed(2)},${yScale(p.value).toFixed(2)}`)
+						.join('L') +
 					`L${xScale(points[points.length - 1].date).toFixed(2)},${zeroY.toFixed(2)}Z`
 			: ''
 	);
@@ -85,7 +88,11 @@
 
 <div class="chart" use:track>
 	{#if points.length === 0}
-		<EmptyState title="No drawdown data" description="This run produced no drawdown series." compact />
+		<EmptyState
+			title="No drawdown data"
+			description="This run produced no drawdown series."
+			compact
+		/>
 	{:else}
 		<svg
 			{width}

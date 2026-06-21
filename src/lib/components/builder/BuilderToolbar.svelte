@@ -18,7 +18,10 @@
 		const blob = new Blob([json], { type: 'application/json' });
 		const url = URL.createObjectURL(blob);
 		const safeName =
-			store.spec.name.trim().replace(/[^a-z0-9-_]+/gi, '-').replace(/^-+|-+$/g, '') || 'strategy';
+			store.spec.name
+				.trim()
+				.replace(/[^a-z0-9-_]+/gi, '-')
+				.replace(/^-+|-+$/g, '') || 'strategy';
 		const a = document.createElement('a');
 		a.href = url;
 		a.download = `${safeName}.json`;

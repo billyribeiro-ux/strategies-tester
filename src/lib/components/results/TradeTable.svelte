@@ -167,11 +167,7 @@
 			<thead>
 				<tr>
 					{#each LEDGER_COLUMNS as col (col.key)}
-						<th
-							scope="col"
-							class:num={alignRight(col)}
-							aria-sort={ariaSort(col.key)}
-						>
+						<th scope="col" class:num={alignRight(col)} aria-sort={ariaSort(col.key)}>
 							<button
 								type="button"
 								class="sort-btn"
@@ -242,7 +238,9 @@
 					</tr>
 				{:else}
 					<tr>
-						<td class="no-match" colspan={LEDGER_COLUMNS.length}>No trades match the current filters.</td>
+						<td class="no-match" colspan={LEDGER_COLUMNS.length}
+							>No trades match the current filters.</td
+						>
 					</tr>
 				{/each}
 			</tbody>
@@ -258,7 +256,8 @@
 							<span class="good"><b>Gross win</b> {formatSignedCurrency(totals.grossWin)}</span>
 							<span class="bad"><b>Gross loss</b> {formatSignedCurrency(totals.grossLoss)}</span>
 							<span class:good={totals.net > 0} class:bad={totals.net < 0}>
-								<b>Net</b> {formatSignedCurrency(totals.net)}
+								<b>Net</b>
+								{formatSignedCurrency(totals.net)}
 							</span>
 							<span><b>Profit factor</b> {formatRatio(totals.profitFactor)}</span>
 							<span><b>Avg win</b> {formatSignedCurrency(totals.avgWin)}</span>
@@ -267,7 +266,8 @@
 							<span><b>Largest loss</b> {formatSignedCurrency(totals.largestLoss)}</span>
 							<span><b>Avg R</b> {formatRMultiple(totals.avgR)}</span>
 							<span class:good={totals.expectancy > 0} class:bad={totals.expectancy < 0}>
-								<b>Expectancy</b> {formatSignedCurrency(totals.expectancy)}
+								<b>Expectancy</b>
+								{formatSignedCurrency(totals.expectancy)}
 							</span>
 							<span><b>Avg bars held</b> {formatRatio(totals.avgBarsHeld, 1)}</span>
 							<span><b>Total bars</b> {formatInt(totals.totalBars)}</span>

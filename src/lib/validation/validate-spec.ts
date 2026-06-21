@@ -218,7 +218,13 @@ function validateLeaf(leaf: ConditionLeaf, path: string, ctx: Ctx) {
 		case 'unary':
 			validateOperand(leaf.operand, `${path}.operand`, leaf.id, ctx);
 			if (leaf.operand.kind === 'constant') {
-				add(ctx, 'error', `${path}.operand`, 'Rising/falling needs a series, not a constant.', leaf.id);
+				add(
+					ctx,
+					'error',
+					`${path}.operand`,
+					'Rising/falling needs a series, not a constant.',
+					leaf.id
+				);
 			}
 			if (leaf.lookback < 1) {
 				add(ctx, 'error', `${path}.lookback`, 'Lookback must be at least 1 bar.', leaf.id);
@@ -230,7 +236,13 @@ function validateLeaf(leaf: ConditionLeaf, path: string, ctx: Ctx) {
 			validateOperand(leaf.upper, `${path}.upper`, leaf.id, ctx);
 			if (leaf.lower.kind === 'constant' && leaf.upper.kind === 'constant') {
 				if (leaf.lower.value >= leaf.upper.value) {
-					add(ctx, 'error', `${path}.upper`, 'Upper bound must be greater than lower bound.', leaf.id);
+					add(
+						ctx,
+						'error',
+						`${path}.upper`,
+						'Upper bound must be greater than lower bound.',
+						leaf.id
+					);
 				}
 			}
 			break;
@@ -253,7 +265,13 @@ function validateOperand(operand: Operand, path: string, nodeId: string, ctx: Ct
 			if (!operand.component) {
 				add(ctx, 'error', path, `Choose a component (${cap.components.join(', ')}).`, nodeId);
 			} else if (!cap.components.includes(operand.component)) {
-				add(ctx, 'error', path, `"${operand.component}" is not a component of ${cap.label}.`, nodeId);
+				add(
+					ctx,
+					'error',
+					path,
+					`"${operand.component}" is not a component of ${cap.label}.`,
+					nodeId
+				);
 			}
 		}
 	}
@@ -282,7 +300,12 @@ function validateRisk(risk: Risk, ctx: Ctx) {
 		);
 	}
 	if (risk.positionSizing.mode === 'percentEquity' && risk.positionSizing.percent > 100) {
-		add(ctx, 'warning', 'risk.positionSizing', 'Position size exceeds 100% of equity (uses leverage).');
+		add(
+			ctx,
+			'warning',
+			'risk.positionSizing',
+			'Position size exceeds 100% of equity (uses leverage).'
+		);
 	}
 	if (risk.maxConcurrentPositions < 1) {
 		add(ctx, 'error', 'risk.maxConcurrentPositions', 'Allow at least one concurrent position.');
@@ -290,7 +313,11 @@ function validateRisk(risk: Risk, ctx: Ctx) {
 	if (risk.pyramiding < 0) {
 		add(ctx, 'error', 'risk.pyramiding', 'Pyramiding cannot be negative.');
 	}
-	validateAtrRef(risk.stopLoss.mode === 'atr' ? risk.stopLoss.atrRef : undefined, 'risk.stopLoss', ctx);
+	validateAtrRef(
+		risk.stopLoss.mode === 'atr' ? risk.stopLoss.atrRef : undefined,
+		'risk.stopLoss',
+		ctx
+	);
 	validateAtrRef(
 		risk.takeProfit.mode === 'atr' ? risk.takeProfit.atrRef : undefined,
 		'risk.takeProfit',
@@ -315,9 +342,19 @@ function validateAtrRef(ref: string | undefined, path: string, ctx: Ctx) {
 
 function validateExecution(spec: StrategySpec, capabilities: Capabilities, ctx: Ctx) {
 	if (!capabilities.fillModels.includes(spec.execution.fillOn)) {
-		add(ctx, 'error', 'execution.fillOn', `Fill model "${spec.execution.fillOn}" is not supported.`);
+		add(
+			ctx,
+			'error',
+			'execution.fillOn',
+			`Fill model "${spec.execution.fillOn}" is not supported.`
+		);
 	}
 	if (!capabilities.orderTypes.includes(spec.execution.orderType)) {
-		add(ctx, 'error', 'execution.orderType', `Order type "${spec.execution.orderType}" is not supported.`);
+		add(
+			ctx,
+			'error',
+			'execution.orderType',
+			`Order type "${spec.execution.orderType}" is not supported.`
+		);
 	}
 }

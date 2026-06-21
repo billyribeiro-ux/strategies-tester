@@ -35,12 +35,7 @@ export interface DrawdownPoint {
 
 export type TradeSide = 'long' | 'short';
 
-export type ExitReason =
-	| 'stopHit'
-	| 'targetHit'
-	| 'trailingStop'
-	| 'signalExit'
-	| 'endOfData';
+export type ExitReason = 'stopHit' | 'targetHit' | 'trailingStop' | 'signalExit' | 'endOfData';
 
 export const EXIT_REASONS: readonly ExitReason[] = [
 	'stopHit',

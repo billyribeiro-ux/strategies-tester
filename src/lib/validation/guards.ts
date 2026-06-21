@@ -3,13 +3,7 @@
  * the UI (which renders different editors per variant) and for the engine.
  */
 
-import type {
-	ConditionGroup,
-	ConditionLeaf,
-	Operand,
-	ParamSchema,
-	RuleNode
-} from '$lib/types';
+import type { ConditionGroup, ConditionLeaf, Operand, ParamSchema, RuleNode } from '$lib/types';
 
 export function isGroup(node: RuleNode): node is ConditionGroup {
 	return node.kind === 'group';

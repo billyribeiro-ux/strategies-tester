@@ -61,8 +61,7 @@
 			{#if childCount > 1}
 				<SegmentedControl
 					bind:value={
-						() => group.logic,
-						(v) => store.setGroupLogic(section, group.id, v as 'AND' | 'OR')
+						() => group.logic, (v) => store.setGroupLogic(section, group.id, v as 'AND' | 'OR')
 					}
 					options={logicOptions}
 					size="sm"

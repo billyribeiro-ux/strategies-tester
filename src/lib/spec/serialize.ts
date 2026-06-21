@@ -64,7 +64,10 @@ export function importSpecJSON(text: string): ImportResult {
 	if (!parsed.success) {
 		const first = parsed.error.issues[0];
 		const where = first?.path?.length ? ` at ${first.path.join('.')}` : '';
-		return { success: false, error: `Invalid strategy file${where}: ${first?.message ?? 'unknown error'}` };
+		return {
+			success: false,
+			error: `Invalid strategy file${where}: ${first?.message ?? 'unknown error'}`
+		};
 	}
 	return { success: true, spec: migrateSpec(parsed.data) };
 }

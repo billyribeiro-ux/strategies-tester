@@ -58,7 +58,11 @@
 	<div class="panel-body">
 		<div class="controls">
 			<div class="ticker-select">
-				<Select label="Ticker" options={tickers.map((t) => ({ value: t, label: t }))} bind:value={selected} />
+				<Select
+					label="Ticker"
+					options={tickers.map((t) => ({ value: t, label: t }))}
+					bind:value={selected}
+				/>
 			</div>
 			<div class="legend" aria-hidden="true">
 				<Badge tone="long" size="sm">▲ Entry / ▼ Exit</Badge>

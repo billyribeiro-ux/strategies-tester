@@ -123,16 +123,12 @@ describe('tradesToCsv', () => {
 
 describe('buildFilename', () => {
 	it('uses the single ticker', () => {
-		expect(buildFilename(makeSpec(), 'csv')).toBe(
-			'My_Strategy_AAPL_2024-01-01_2024-12-31.csv'
-		);
+		expect(buildFilename(makeSpec(), 'csv')).toBe('My_Strategy_AAPL_2024-01-01_2024-12-31.csv');
 	});
 
 	it("uses 'portfolio' for multiple tickers", () => {
 		const spec = makeSpec({ tickers: ['AAPL', 'MSFT'] });
-		expect(buildFilename(spec, 'xlsx')).toBe(
-			'My_Strategy_portfolio_2024-01-01_2024-12-31.xlsx'
-		);
+		expect(buildFilename(spec, 'xlsx')).toBe('My_Strategy_portfolio_2024-01-01_2024-12-31.xlsx');
 	});
 
 	it('sanitizes unsafe characters to underscores', () => {

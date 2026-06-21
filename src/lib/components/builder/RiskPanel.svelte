@@ -235,8 +235,7 @@
 					label="Method"
 					options={sizingModeOptions}
 					bind:value={
-						() => risk.positionSizing.mode,
-						(v) => setSizingMode(v as PositionSizing['mode'])
+						() => risk.positionSizing.mode, (v) => setSizingMode(v as PositionSizing['mode'])
 					}
 				/>
 				{#if risk.positionSizing.mode === 'percentEquity'}
@@ -246,7 +245,8 @@
 						min={0}
 						step={0.5}
 						bind:value={
-							() => (risk.positionSizing.mode === 'percentEquity' ? risk.positionSizing.percent : 0),
+							() =>
+								risk.positionSizing.mode === 'percentEquity' ? risk.positionSizing.percent : 0,
 							(v) => store.setSizing({ mode: 'percentEquity', percent: v })
 						}
 					/>
@@ -257,7 +257,8 @@
 						min={0}
 						step={0.1}
 						bind:value={
-							() => (risk.positionSizing.mode === 'riskBased' ? risk.positionSizing.riskPercent : 0),
+							() =>
+								risk.positionSizing.mode === 'riskBased' ? risk.positionSizing.riskPercent : 0,
 							(v) => store.setSizing({ mode: 'riskBased', riskPercent: v })
 						}
 					/>
@@ -278,7 +279,8 @@
 						min={0}
 						step={1000}
 						bind:value={
-							() => (risk.positionSizing.mode === 'fixedNotional' ? risk.positionSizing.notional : 0),
+							() =>
+								risk.positionSizing.mode === 'fixedNotional' ? risk.positionSizing.notional : 0,
 							(v) => store.setSizing({ mode: 'fixedNotional', notional: v })
 						}
 					/>
@@ -495,8 +497,7 @@
 					label="Commission"
 					options={commissionModeOptions}
 					bind:value={
-						() => risk.commission.mode,
-						(v) => setCommissionMode(v as CommissionModel['mode'])
+						() => risk.commission.mode, (v) => setCommissionMode(v as CommissionModel['mode'])
 					}
 				/>
 				{#if risk.commission.mode === 'perShare'}

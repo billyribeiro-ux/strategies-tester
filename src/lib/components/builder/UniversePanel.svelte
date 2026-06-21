@@ -57,6 +57,8 @@
 
 	function applyPreset(id: string) {
 		const to = new Date();
+		// Local, non-reactive date math for presets — SvelteDate is unnecessary.
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity
 		const from = new Date(to);
 		switch (id) {
 			case 'ytd':
@@ -104,7 +106,9 @@
 		{ value: 'custom', label: 'Custom' }
 	];
 
-	function updateCustomSession(patch: Partial<Omit<Extract<SessionSpec, { kind: 'custom' }>, 'kind'>>) {
+	function updateCustomSession(
+		patch: Partial<Omit<Extract<SessionSpec, { kind: 'custom' }>, 'kind'>>
+	) {
 		const s = store.spec.universe.session;
 		if (s.kind !== 'custom') return;
 		store.setSession({ ...s, ...patch });
@@ -113,9 +117,7 @@
 	const tickersError = $derived(
 		store.spec.universe.tickers.length === 0 ? 'Add at least one ticker.' : undefined
 	);
-	const dateError = $derived(
-		store.issues.find((i) => i.path === 'universe.dateRange')?.message
-	);
+	const dateError = $derived(store.issues.find((i) => i.path === 'universe.dateRange')?.message);
 </script>
 
 <div class="panel-card">
@@ -143,7 +145,12 @@
 						bind:value={tickerDraft}
 						onkeydown={onTickerKeydown}
 					/>
-					<Button size="sm" variant="secondary" onclick={commitTicker} disabled={!tickerDraft.trim()}>
+					<Button
+						size="sm"
+						variant="secondary"
+						onclick={commitTicker}
+						disabled={!tickerDraft.trim()}
+					>
 						{#snippet icon()}<Plus size={14} weight="bold" />{/snippet}
 						Add
 					</Button>

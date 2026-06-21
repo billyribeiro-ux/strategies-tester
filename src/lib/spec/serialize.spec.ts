@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { createDefaultSpec, createBinaryLeaf, createIndicatorInstance, emptyGroup } from './defaults';
+import {
+	createDefaultSpec,
+	createBinaryLeaf,
+	createIndicatorInstance,
+	emptyGroup
+} from './defaults';
 import { exportSpecJSON, importSpecJSON, stableStringify, cloneSpec } from './serialize';
 import { indicatorCapability } from '$lib/capabilities/catalog';
 import type { StrategySpec } from '$lib/types';
@@ -19,7 +24,10 @@ function richSpec(): StrategySpec {
 		)
 	];
 	spec.rules.longEntry.children = [
-		createBinaryLeaf({ kind: 'price', field: 'close', offset: 0 }, 'gt', { kind: 'constant', value: 10 }),
+		createBinaryLeaf({ kind: 'price', field: 'close', offset: 0 }, 'gt', {
+			kind: 'constant',
+			value: 10
+		}),
 		inner
 	];
 	return spec;

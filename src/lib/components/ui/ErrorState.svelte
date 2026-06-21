@@ -15,7 +15,9 @@
 	<p class="title">{title}</p>
 	{#if message}<p class="msg">{message}</p>{/if}
 	{#if onRetry}
-		<div class="action"><Button variant="secondary" size="sm" onclick={onRetry}>Try again</Button></div>
+		<div class="action">
+			<Button variant="secondary" size="sm" onclick={onRetry}>Try again</Button>
+		</div>
 	{/if}
 </div>
 

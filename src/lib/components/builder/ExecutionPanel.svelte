@@ -68,10 +68,7 @@
 		<Select
 			label="Order type"
 			options={orderOptions}
-			bind:value={
-				() => store.spec.execution.orderType,
-				(v) => store.setOrderType(v as OrderType)
-			}
+			bind:value={() => store.spec.execution.orderType, (v) => store.setOrderType(v as OrderType)}
 		/>
 	</div>
 
@@ -84,14 +81,14 @@
 	{:else if fillOn === 'close'}
 		<Callout tone="warning" title="Assumes you can act on the close">
 			{#snippet icon()}<Info size={16} weight="fill" />{/snippet}
-			Orders fill at the close of the signalling bar. This is optimistic unless your data and
-			workflow truly let you trade the closing print.
+			Orders fill at the close of the signalling bar. This is optimistic unless your data and workflow
+			truly let you trade the closing print.
 		</Callout>
 	{:else}
 		<Callout tone="warning" title="Fills at the signal price">
 			{#snippet icon()}<Info size={16} weight="fill" />{/snippet}
-			Orders fill at the price that produced the signal. Use only when that exact price is reachable
-			intrabar; otherwise prefer next bar open.
+			Orders fill at the price that produced the signal. Use only when that exact price is reachable intrabar;
+			otherwise prefer next bar open.
 		</Callout>
 	{/if}
 </Panel>

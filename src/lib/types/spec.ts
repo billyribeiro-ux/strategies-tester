@@ -20,15 +20,7 @@ export type TimeframeId = string;
 export type IndicatorType = string;
 
 /** Price fields usable as operands and indicator sources. */
-export type PriceField =
-	| 'open'
-	| 'high'
-	| 'low'
-	| 'close'
-	| 'volume'
-	| 'hl2'
-	| 'hlc3'
-	| 'ohlc4';
+export type PriceField = 'open' | 'high' | 'low' | 'close' | 'volume' | 'hl2' | 'hlc3' | 'ohlc4';
 
 export const PRICE_FIELDS: readonly PriceField[] = [
 	'open',
@@ -98,14 +90,7 @@ export type OperandKind = Operand['kind'];
 // Operators — arity encoded by the condition variant that uses them
 // ---------------------------------------------------------------------------
 
-export type BinaryOperator =
-	| 'crossover'
-	| 'crossunder'
-	| 'gt'
-	| 'gte'
-	| 'lt'
-	| 'lte'
-	| 'eq';
+export type BinaryOperator = 'crossover' | 'crossunder' | 'gt' | 'gte' | 'lt' | 'lte' | 'eq';
 
 export type UnaryOperator = 'rising' | 'falling';
 

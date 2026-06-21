@@ -8,7 +8,13 @@
  */
 
 import { desc, eq } from 'drizzle-orm';
-import type { BacktestResult, MetricValue, RunSummary, SavedStrategy, StrategySpec } from '$lib/types';
+import type {
+	BacktestResult,
+	MetricValue,
+	RunSummary,
+	SavedStrategy,
+	StrategySpec
+} from '$lib/types';
 import { db } from '.';
 import {
 	runs,
@@ -79,7 +85,14 @@ export function createStrategy(args: CreateStrategyArgs): SavedStrategy {
 		.values({ id, name: args.name, spec: specJson, version: 1, createdAt: now, updatedAt: now })
 		.run();
 	db.insert(strategyVersions)
-		.values({ id: createId('ver'), strategyId: id, version: 1, name: args.name, spec: specJson, createdAt: now })
+		.values({
+			id: createId('ver'),
+			strategyId: id,
+			version: 1,
+			name: args.name,
+			spec: specJson,
+			createdAt: now
+		})
 		.run();
 
 	return { id, name: args.name, spec, version: 1, createdAt: now, updatedAt: now };
@@ -109,7 +122,14 @@ export function updateStrategy(id: string, args: UpdateStrategyArgs): SavedStrat
 
 	if (bump) {
 		db.insert(strategyVersions)
-			.values({ id: createId('ver'), strategyId: id, version, name, spec: specJson, createdAt: now })
+			.values({
+				id: createId('ver'),
+				strategyId: id,
+				version,
+				name,
+				spec: specJson,
+				createdAt: now
+			})
 			.onConflictDoNothing()
 			.run();
 	}

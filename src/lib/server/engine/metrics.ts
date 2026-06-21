@@ -144,11 +144,7 @@ export function computeMetrics(input: MetricsInput): MetricValue[] {
 	const annFactor = Math.sqrt(periodsPerYear);
 	const sharpe = stdReturn > 0 ? safeRatio(meanReturn, stdReturn) * annFactor : 0;
 	const sortino =
-		downsideDev > 0
-			? safeRatio(meanReturn, downsideDev) * annFactor
-			: meanReturn > 0
-				? 1e9
-				: 0;
+		downsideDev > 0 ? safeRatio(meanReturn, downsideDev) * annFactor : meanReturn > 0 ? 1e9 : 0;
 
 	const drawdown = computeDrawdown(equity);
 	const maxDrawdown = drawdown.reduce((min, p) => Math.min(min, p.drawdown), 0);
@@ -165,7 +161,8 @@ export function computeMetrics(input: MetricsInput): MetricValue[] {
 	const avgWin = wins.length > 0 ? grossWin / wins.length : 0;
 	const avgLoss = losses.length > 0 ? -grossLoss / losses.length : 0;
 	const rTrades = trades.filter((t) => Number.isFinite(t.rMultiple));
-	const avgR = rTrades.length > 0 ? rTrades.reduce((s, t) => s + t.rMultiple, 0) / rTrades.length : 0;
+	const avgR =
+		rTrades.length > 0 ? rTrades.reduce((s, t) => s + t.rMultiple, 0) / rTrades.length : 0;
 	const exposure = totalBars > 0 ? barsInMarket / totalBars : 0;
 	const avgHold =
 		trades.length > 0 ? trades.reduce((s, t) => s + t.barsHeld, 0) / trades.length : 0;

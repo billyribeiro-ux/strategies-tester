@@ -3,13 +3,7 @@
 	import type { SavedStrategy, StrategySpec } from '$lib/types';
 	import { untrack } from 'svelte';
 	import { StrategiesStore } from '$lib/stores/strategies.svelte';
-	import {
-		Button,
-		Callout,
-		EmptyState,
-		ErrorState,
-		LoadingState
-	} from '$lib/components/ui';
+	import { Button, Callout, EmptyState, ErrorState, LoadingState } from '$lib/components/ui';
 	import StrategyList from '$lib/components/strategies/StrategyList.svelte';
 	import VersionsModal from '$lib/components/strategies/VersionsModal.svelte';
 	import ImportStrategyDialog from '$lib/components/strategies/ImportStrategyDialog.svelte';
@@ -90,7 +84,12 @@
 			{#snippet icon()}<Warning size={16} weight="fill" />{/snippet}
 			<span class="banner-row">
 				<span>{store.error}</span>
-				<button type="button" class="dismiss" aria-label="Dismiss" onclick={() => store.clearError()}>
+				<button
+					type="button"
+					class="dismiss"
+					aria-label="Dismiss"
+					onclick={() => store.clearError()}
+				>
 					<X size={14} />
 				</button>
 			</span>

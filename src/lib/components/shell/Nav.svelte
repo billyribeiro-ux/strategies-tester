@@ -32,12 +32,7 @@
 		{#each links as link (link.href)}
 			{@const active = isActive(link.href, page.url.pathname)}
 			<li>
-				<a
-					class="link"
-					class:active
-					href={link.href}
-					aria-current={active ? 'page' : undefined}
-				>
+				<a class="link" class:active href={link.href} aria-current={active ? 'page' : undefined}>
 					{link.label}
 				</a>
 			</li>

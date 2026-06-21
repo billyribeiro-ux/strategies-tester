@@ -71,7 +71,11 @@ describe('registry coverage', () => {
 
 describe('SMA', () => {
 	it('matches hand-computed values for period 3', () => {
-		const out = computeSMA(closeCandles([1, 2, 3, 4, 5]), reader({ period: 3 }), 'close') as number[];
+		const out = computeSMA(
+			closeCandles([1, 2, 3, 4, 5]),
+			reader({ period: 3 }),
+			'close'
+		) as number[];
 		expect(Number.isNaN(out[0])).toBe(true);
 		expect(Number.isNaN(out[1])).toBe(true);
 		expect(out[2]).toBeCloseTo(2, 12);
@@ -82,7 +86,11 @@ describe('SMA', () => {
 
 describe('EMA', () => {
 	it('seeds with the SMA and smooths thereafter (period 3)', () => {
-		const out = computeEMA(closeCandles([1, 2, 3, 4, 5]), reader({ period: 3 }), 'close') as number[];
+		const out = computeEMA(
+			closeCandles([1, 2, 3, 4, 5]),
+			reader({ period: 3 }),
+			'close'
+		) as number[];
 		expect(Number.isNaN(out[1])).toBe(true);
 		expect(out[2]).toBeCloseTo(2, 12); // seed = SMA(3) of 1,2,3
 		expect(out[3]).toBeCloseTo(3, 12); // 4*.5 + 2*.5
@@ -152,7 +160,7 @@ describe('ATR', () => {
 	it('first smoothed value equals the average true range over the period', () => {
 		// Build candles with a constant true range of 2 each bar.
 		const rows: Array<[number, number, number, number]> = [];
-		let base = 100;
+		const base = 100;
 		for (let i = 0; i < 20; i++) {
 			rows.push([base, base + 1, base - 1, base]); // h-l = 2, prevClose=base → TR=2
 		}
@@ -228,7 +236,11 @@ describe('OBV', () => {
 
 describe('ROC', () => {
 	it('computes percentage change over the period', () => {
-		const out = computeROC(closeCandles([10, 11, 12, 13, 14]), reader({ period: 2 }), 'close') as number[];
+		const out = computeROC(
+			closeCandles([10, 11, 12, 13, 14]),
+			reader({ period: 2 }),
+			'close'
+		) as number[];
 		expect(Number.isNaN(out[1])).toBe(true);
 		expect(out[2]).toBeCloseTo(((12 - 10) / 10) * 100, 12); // 20
 		expect(out[4]).toBeCloseTo(((14 - 12) / 12) * 100, 12);

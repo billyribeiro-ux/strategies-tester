@@ -10,26 +10,40 @@
 	}
 	let { data }: Props = $props();
 
-	const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+	const MONTHS = [
+		'Jan',
+		'Feb',
+		'Mar',
+		'Apr',
+		'May',
+		'Jun',
+		'Jul',
+		'Aug',
+		'Sep',
+		'Oct',
+		'Nov',
+		'Dec'
+	];
 
 	// Group into a year → (month → return) lookup and derive the ordered years.
-	const byYear = $derived(
-		(() => {
-			const map = new Map<number, Map<number, number>>();
-			for (const r of data) {
-				if (!map.has(r.year)) map.set(r.year, new Map());
-				map.get(r.year)!.set(r.month, r.returnPct);
-			}
-			return map;
-		})()
+	const byYear = $derived.by(() => {
+		const map: Record<number, Record<number, number>> = {};
+		for (const r of data) {
+			(map[r.year] ??= {})[r.month] = r.returnPct;
+		}
+		return map;
+	});
+	const years = $derived(
+		Object.keys(byYear)
+			.map(Number)
+			.sort((a, b) => a - b)
 	);
-	const years = $derived([...byYear.keys()].sort((a, b) => a - b));
 
 	// Symmetric color scale anchored on the largest absolute monthly return.
 	const maxAbs = $derived(d3max(data, (r) => Math.abs(r.returnPct)) ?? 0);
 
 	function cell(year: number, month: number): number | undefined {
-		return byYear.get(year)?.get(month);
+		return byYear[year]?.[month];
 	}
 	function fill(value: number | undefined): string {
 		if (value === undefined) return 'transparent';
@@ -43,7 +57,11 @@
 </script>
 
 {#if years.length === 0}
-	<EmptyState title="No monthly returns" description="This run produced no monthly breakdown." compact />
+	<EmptyState
+		title="No monthly returns"
+		description="This run produced no monthly breakdown."
+		compact
+	/>
 {:else}
 	<div class="heatmap">
 		<table>
@@ -60,14 +78,14 @@
 				{#each years as year (year)}
 					<tr>
 						<th scope="row" class="year">{year}</th>
-						{#each MONTHS as _month, mi (mi)}
+						{#each MONTHS as month, mi (mi)}
 							{@const v = cell(year, mi + 1)}
 							<td
 								class="cell"
 								class:empty={v === undefined}
 								style:background={fill(v)}
 								style:color={textTone(v)}
-								title={v === undefined ? '' : `${MONTHS[mi]} ${year}: ${formatSignedPercent(v)}`}
+								title={v === undefined ? '' : `${month} ${year}: ${formatSignedPercent(v)}`}
 							>
 								{v === undefined ? '' : formatSignedPercent(v, 1)}
 							</td>
@@ -79,7 +97,11 @@
 
 		<div class="legend" aria-hidden="true">
 			<span class="cap">{formatSignedPercent(-maxAbs, 1)}</span>
-			<span class="bar" style:background="linear-gradient(to right, {divergingFill(-1)}, {divergingFill(0)}, {divergingFill(1)})"
+			<span
+				class="bar"
+				style:background="linear-gradient(to right, {divergingFill(-1)}, {divergingFill(0)}, {divergingFill(
+					1
+				)})"
 			></span>
 			<span class="cap">{formatSignedPercent(maxAbs, 1)}</span>
 		</div>

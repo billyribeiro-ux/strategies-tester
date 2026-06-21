@@ -103,8 +103,7 @@
 			spellcheck="false"
 			placeholder={'{\n  "schemaVersion": 1,\n  "name": "My strategy",\n  ...\n}'}
 			aria-invalid={parseError ? true : undefined}
-			aria-describedby={parseError ? 'import-error' : undefined}
-		></textarea>
+			aria-describedby={parseError ? 'import-error' : undefined}></textarea>
 
 		{#if parseError}
 			<div id="import-error">

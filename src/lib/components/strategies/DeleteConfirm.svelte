@@ -37,8 +37,7 @@
 
 <Modal bind:open title="Delete strategy" size="sm" onclose={handleClose}>
 	<p class="body">
-		Permanently delete <strong>{name}</strong> and all of its saved versions? This cannot be
-		undone.
+		Permanently delete <strong>{name}</strong> and all of its saved versions? This cannot be undone.
 	</p>
 	{#if error}
 		<div class="error">

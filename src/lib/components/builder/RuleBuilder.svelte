@@ -43,12 +43,7 @@
 						<SignIn size={18} color="var(--c-short)" />
 					{/if}
 				{/snippet}
-				<ConditionGroupEditor
-					{store}
-					{section}
-					group={store.spec.rules[section]}
-					isRoot
-				/>
+				<ConditionGroupEditor {store} {section} group={store.spec.rules[section]} isRoot />
 			</Panel>
 		</div>
 	{/each}

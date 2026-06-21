@@ -6,11 +6,7 @@
 	let { size = 20, label = 'Loading' }: Props = $props();
 </script>
 
-<span
-	class="spinner"
-	role="status"
-	aria-label={label}
-	style="width:{size}px;height:{size}px"
+<span class="spinner" role="status" aria-label={label} style="width:{size}px;height:{size}px"
 ></span>
 
 <style>

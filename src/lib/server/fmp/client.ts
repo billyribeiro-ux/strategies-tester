@@ -54,7 +54,10 @@ const BASE = 'https://financialmodelingprep.com/stable';
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function fetchCandles(query: CandleQuery, fetchFn: FetchFn = fetch): Promise<Candle[]> {
+export async function fetchCandles(
+	query: CandleQuery,
+	fetchFn: FetchFn = fetch
+): Promise<Candle[]> {
 	const { symbol, timeframe, from, to } = query;
 
 	const cached = readCache(symbol, timeframe, from, to);
@@ -67,9 +70,9 @@ export async function fetchCandles(query: CandleQuery, fetchFn: FetchFn = fetch)
 
 	let candles: Candle[];
 	if (timeframe === '1d') {
-		candles = normalizeBars(await fetchDaily(symbol, from, to, apiKey, fetchFn));
+		candles = normalizeBars(await fetchDailyRange(symbol, from, to, apiKey, fetchFn));
 	} else if (timeframe === '1w') {
-		const daily = normalizeBars(await fetchDaily(symbol, from, to, apiKey, fetchFn));
+		const daily = normalizeBars(await fetchDailyRange(symbol, from, to, apiKey, fetchFn));
 		candles = aggregateWeekly(daily);
 	} else if (INTRADAY_INTERVAL[timeframe]) {
 		const interval = INTRADAY_INTERVAL[timeframe];
@@ -97,6 +100,54 @@ async function fetchDaily(
 ): Promise<FmpBar[]> {
 	const url = `${BASE}/historical-price-eod/full?symbol=${encodeURIComponent(symbol)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&apikey=${encodeURIComponent(apiKey)}`;
 	return requestArray(url, symbol, fetchFn);
+}
+
+/**
+ * Daily fetch that respects FMP's documented 5-year-per-request window: ranges
+ * longer than that are split into adjacent ≤5-year sub-requests and concatenated
+ * (boundary days are de-duplicated downstream in `normalizeBars`). Without this a
+ * 10-year backtest would silently receive only the most recent 5 years.
+ */
+async function fetchDailyRange(
+	symbol: string,
+	from: string,
+	to: string,
+	apiKey: string,
+	fetchFn: FetchFn
+): Promise<FmpBar[]> {
+	const windows = splitDateRange(from, to, MAX_RANGE_YEARS);
+	if (windows.length <= 1) return fetchDaily(symbol, from, to, apiKey, fetchFn);
+	const all: FmpBar[] = [];
+	for (const w of windows) {
+		all.push(...(await fetchDaily(symbol, w.from, w.to, apiKey, fetchFn)));
+	}
+	return all;
+}
+
+const MAX_RANGE_YEARS = 5;
+
+/** Split an inclusive `YYYY-MM-DD` range into adjacent windows of ≤ `maxYears`. */
+function splitDateRange(
+	from: string,
+	to: string,
+	maxYears: number
+): Array<{ from: string; to: string }> {
+	const start = Date.parse(`${from}T00:00:00Z`);
+	const end = Date.parse(`${to}T00:00:00Z`);
+	if (Number.isNaN(start) || Number.isNaN(end) || start >= end) return [{ from, to }];
+	const DAY = 86_400_000;
+	const ymd = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+	const windows: Array<{ from: string; to: string }> = [];
+	let s = start;
+	while (s <= end) {
+		const sd = new Date(s);
+		const capped =
+			Date.UTC(sd.getUTCFullYear() + maxYears, sd.getUTCMonth(), sd.getUTCDate()) - DAY;
+		const e = Math.min(capped, end);
+		windows.push({ from: ymd(s), to: ymd(e) });
+		s = e + DAY;
+	}
+	return windows;
 }
 
 async function fetchIntraday(
@@ -168,7 +219,15 @@ function normalizeBars(bars: FmpBar[]): Candle[] {
 		out.push({ t: toIso(b.date), o, h, l, c, v: Number.isNaN(v) ? 0 : v });
 	}
 	out.sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
-	return out;
+	// De-duplicate by timestamp (chunked daily fetches can repeat a boundary day),
+	// keeping the last occurrence.
+	const deduped: Candle[] = [];
+	for (const c of out) {
+		const last = deduped[deduped.length - 1];
+		if (last && last.t === c.t) deduped[deduped.length - 1] = c;
+		else deduped.push(c);
+	}
+	return deduped;
 }
 
 function num(v: unknown): number {
@@ -303,9 +362,7 @@ function filterSession(candles: Candle[], session: SessionSpec): Candle[] {
 			return candles.filter((c) => {
 				const { hour, minute } = tzFields(Date.parse(c.t), session.tz);
 				const minutes = hour * 60 + minute;
-				return start <= end
-					? minutes >= start && minutes < end
-					: minutes >= start || minutes < end; // overnight session
+				return start <= end ? minutes >= start && minutes < end : minutes >= start || minutes < end; // overnight session
 			});
 		}
 	}
@@ -387,7 +444,13 @@ function readCache(symbol: string, timeframe: string, from: string, to: string):
 	}
 }
 
-function writeCache(symbol: string, timeframe: string, from: string, to: string, candles: Candle[]) {
+function writeCache(
+	symbol: string,
+	timeframe: string,
+	from: string,
+	to: string,
+	candles: Candle[]
+) {
 	db.insert(candleCache)
 		.values({
 			id: createId('cdl'),

@@ -230,8 +230,12 @@ describe('runBacktest — metric sanity', () => {
 				{ id: 'sma_slow', type: 'sma', params: { period: 5 }, priceSource: 'close' }
 			],
 			rules: {
-				longEntry: group('AND', [binary(indicator('sma_fast'), 'crossover', indicator('sma_slow'))]),
-				longExit: group('AND', [binary(indicator('sma_fast'), 'crossunder', indicator('sma_slow'))]),
+				longEntry: group('AND', [
+					binary(indicator('sma_fast'), 'crossover', indicator('sma_slow'))
+				]),
+				longExit: group('AND', [
+					binary(indicator('sma_fast'), 'crossunder', indicator('sma_slow'))
+				]),
 				shortEntry: emptyGroup(),
 				shortExit: emptyGroup()
 			}

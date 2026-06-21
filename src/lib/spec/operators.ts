@@ -15,11 +15,7 @@ import type {
 	RangeOperator,
 	UnaryOperator
 } from '$lib/types';
-import {
-	BINARY_OPERATORS,
-	RANGE_OPERATORS,
-	UNARY_OPERATORS
-} from '$lib/types';
+import { BINARY_OPERATORS, RANGE_OPERATORS, UNARY_OPERATORS } from '$lib/types';
 
 export interface OperatorMeta {
 	id: Operator;

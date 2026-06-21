@@ -28,12 +28,13 @@ import { assertNever } from '$lib/utils/assert-never';
 import { CAPABILITIES } from '$lib/capabilities/catalog';
 import { getComputeFn } from '../indicators/registry';
 import { ParamReader } from '../indicators/compute';
+import { evaluateGroup, type EvalContext, type IndicatorSeriesMap } from './evaluate';
 import {
-	evaluateGroup,
-	type EvalContext,
-	type IndicatorSeriesMap
-} from './evaluate';
-import { computeDistribution, computeDrawdown, computeMetrics, computeMonthlyReturns } from './metrics';
+	computeDistribution,
+	computeDrawdown,
+	computeMetrics,
+	computeMonthlyReturns
+} from './metrics';
 
 // ---------------------------------------------------------------------------
 // Internal per-ticker working state
@@ -69,14 +70,6 @@ interface OpenPosition {
 	atrAtEntry: number;
 }
 
-interface ClosedFill {
-	position: OpenPosition;
-	exitPrice: number;
-	exitTime: string;
-	exitBarIndex: number;
-	exitReason: ExitReason;
-}
-
 // ---------------------------------------------------------------------------
 // Precompute
 // ---------------------------------------------------------------------------
@@ -105,12 +98,17 @@ function precomputeIndicators(
 // ---------------------------------------------------------------------------
 
 /** Apply slippage to a fill price, always adverse to the trade direction. */
-function applySlippage(price: number, side: TradeSide, isEntry: boolean, spec: StrategySpec): number {
+function applySlippage(
+	price: number,
+	side: TradeSide,
+	isEntry: boolean,
+	spec: StrategySpec
+): number {
 	const slip = spec.risk.slippage;
 	// Adverse direction: entries fill worse (long pays more / short receives less),
 	// exits fill worse (long sells lower / short buys higher).
 	const adverseUp = (side === 'long' && isEntry) || (side === 'short' && !isEntry);
-	let delta = 0;
+	let delta: number;
 	switch (slip.mode) {
 		case 'none':
 			delta = 0;

@@ -1,10 +1,6 @@
 <script lang="ts">
 	import type { ConditionLeaf, Operand, Operator, RuleSection } from '$lib/types';
-	import {
-		isBinaryLeaf,
-		isRangeLeaf,
-		isUnaryLeaf
-	} from '$lib/validation/guards';
+	import { isBinaryLeaf, isRangeLeaf, isUnaryLeaf } from '$lib/validation/guards';
 	import type { SpecIssue } from '$lib/validation';
 	import {
 		isBinaryOperator,
@@ -71,27 +67,22 @@
 		// Arity changed — rebuild the leaf, preserving the primary operand.
 		const primary = primaryOperand;
 		if (isBinaryOperator(nextOp)) {
-			store.replaceLeaf(
-				section,
-				leaf.id,
-				{ ...createBinaryLeaf(primary, nextOp, defaultOperand('constant')), id: leaf.id }
-			);
+			store.replaceLeaf(section, leaf.id, {
+				...createBinaryLeaf(primary, nextOp, defaultOperand('constant')),
+				id: leaf.id
+			});
 		} else if (isUnaryOperator(nextOp)) {
 			// rising/falling need a series; fall back to price if the primary is a constant.
 			const operand = primary.kind === 'constant' ? defaultOperand('price') : primary;
 			store.replaceLeaf(section, leaf.id, { ...createUnaryLeaf(operand, nextOp, 1), id: leaf.id });
 		} else if (isRangeOperator(nextOp)) {
-			store.replaceLeaf(
-				section,
-				leaf.id,
-				{
-					...createRangeLeaf(primary, nextOp, defaultOperand('constant'), {
-						kind: 'constant',
-						value: 1
-					}),
-					id: leaf.id
-				}
-			);
+			store.replaceLeaf(section, leaf.id, {
+				...createRangeLeaf(primary, nextOp, defaultOperand('constant'), {
+					kind: 'constant',
+					value: 1
+				}),
+				id: leaf.id
+			});
 		} else {
 			assertNever(nextOp);
 		}

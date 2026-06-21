@@ -141,7 +141,7 @@ export const LEDGER_COLUMNS: LedgerColumn[] = [
 		key: 'stopPrice',
 		label: 'Stop price',
 		type: 'currency',
-		value: (t) => (t.stopPrice ?? Number.NaN),
+		value: (t) => t.stopPrice ?? Number.NaN,
 		display: (t) => (t.stopPrice === null ? '—' : formatCurrency(t.stopPrice)),
 		csv: (t) => (t.stopPrice === null ? '' : num(t.stopPrice))
 	},
@@ -149,7 +149,7 @@ export const LEDGER_COLUMNS: LedgerColumn[] = [
 		key: 'targetPrice',
 		label: 'Target price',
 		type: 'currency',
-		value: (t) => (t.targetPrice ?? Number.NaN),
+		value: (t) => t.targetPrice ?? Number.NaN,
 		display: (t) => (t.targetPrice === null ? '—' : formatCurrency(t.targetPrice)),
 		csv: (t) => (t.targetPrice === null ? '' : num(t.targetPrice))
 	},

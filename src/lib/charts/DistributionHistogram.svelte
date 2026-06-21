@@ -24,9 +24,7 @@
 		return { destroy: () => ro.disconnect() };
 	}
 
-	const bins = $derived(
-		data.map((b, i) => ({ ...b, i, center: (b.lower + b.upper) / 2 }))
-	);
+	const bins = $derived(data.map((b, i) => ({ ...b, i, center: (b.lower + b.upper) / 2 })));
 
 	const innerW = $derived(Math.max(0, width - m.left - m.right));
 	const innerH = $derived(Math.max(0, height - m.top - m.bottom));
@@ -41,16 +39,18 @@
 	const yTicks = $derived(niceTicks(0, yScale.domain()[1], 4));
 	const gap = 1.5;
 
-	const zeroX = $derived(
-		domainLo <= 0 && domainHi >= 0 ? xScale(0) : null
-	);
+	const zeroX = $derived(domainLo <= 0 && domainHi >= 0 ? xScale(0) : null);
 
 	let hover = $state<number | null>(null);
 </script>
 
 <div class="chart" use:track>
 	{#if bins.length === 0}
-		<EmptyState title="No distribution" description="This run produced no trade distribution." compact />
+		<EmptyState
+			title="No distribution"
+			description="This run produced no trade distribution."
+			compact
+		/>
 	{:else}
 		<svg
 			{width}
@@ -75,7 +75,7 @@
 					{@const y = yScale(b.count)}
 					<rect
 						x={x0 + gap / 2}
-						y={y}
+						{y}
 						width={bw}
 						height={Math.max(0, innerH - y)}
 						rx="1.5"

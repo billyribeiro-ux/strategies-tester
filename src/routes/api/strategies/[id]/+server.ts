@@ -3,11 +3,7 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { parseSpec } from '$lib/validation';
-import {
-	deleteStrategy,
-	getStrategy,
-	updateStrategy
-} from '$lib/server/db/repository';
+import { deleteStrategy, getStrategy, updateStrategy } from '$lib/server/db/repository';
 
 export const GET: RequestHandler = ({ params }) => {
 	const strategy = getStrategy(params.id);

@@ -54,14 +54,14 @@ describe('validateSpec', () => {
 		spec.risk.positionSizing = { mode: 'riskBased', riskPercent: 1 };
 		spec.risk.stopLoss = { mode: 'none' };
 		const issues = v(spec);
-		expect(issues.some((i) => i.path === 'risk.positionSizing' && i.severity === 'error')).toBe(true);
+		expect(issues.some((i) => i.path === 'risk.positionSizing' && i.severity === 'error')).toBe(
+			true
+		);
 	});
 
 	it('errors on rising/falling applied to a constant', () => {
 		const spec = validSpec();
-		spec.rules.longEntry.children = [
-			createUnaryLeaf({ kind: 'constant', value: 5 }, 'rising', 1)
-		];
+		spec.rules.longEntry.children = [createUnaryLeaf({ kind: 'constant', value: 5 }, 'rising', 1)];
 		expect(hasErrors(v(spec))).toBe(true);
 	});
 

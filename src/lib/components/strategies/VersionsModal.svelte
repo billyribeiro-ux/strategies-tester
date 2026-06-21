@@ -39,8 +39,7 @@
 			versions = [...result].sort((a, b) => b.version - a.version);
 			loadedFor = strategy.id;
 		} catch (err) {
-			error =
-				err instanceof ApiError ? err.message : 'Could not load the version history.';
+			error = err instanceof ApiError ? err.message : 'Could not load the version history.';
 		} finally {
 			loading = false;
 		}

@@ -41,7 +41,11 @@
 </script>
 
 {#if groups.length === 0}
-	<EmptyState title="No metrics" description="This run did not report any summary metrics." compact />
+	<EmptyState
+		title="No metrics"
+		description="This run did not report any summary metrics."
+		compact
+	/>
 {:else}
 	<div class="groups">
 		{#each groups as g (g.group)}

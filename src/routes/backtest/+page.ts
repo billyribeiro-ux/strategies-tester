@@ -30,8 +30,7 @@ export const load: PageLoad = async ({ fetch, url }): Promise<BuilderData> => {
 		}
 		return { capabilities, saved, error: null };
 	} catch (err) {
-		const message =
-			err instanceof ApiError ? err.message : 'Could not load the strategy builder.';
+		const message = err instanceof ApiError ? err.message : 'Could not load the strategy builder.';
 		return { capabilities: null, saved: null, error: message };
 	}
 };

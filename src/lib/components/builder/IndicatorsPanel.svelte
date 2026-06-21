@@ -14,7 +14,10 @@
 	let pickerOpen = $state(false);
 </script>
 
-<Panel title="Indicators" description="Declare each indicator once, then reference it in your rules.">
+<Panel
+	title="Indicators"
+	description="Declare each indicator once, then reference it in your rules."
+>
 	{#snippet icon()}<Function size={18} />{/snippet}
 	{#snippet actions()}
 		<Button size="sm" variant="primary" onclick={() => (pickerOpen = true)}>

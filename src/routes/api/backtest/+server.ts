@@ -52,7 +52,13 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	try {
 		for (const ticker of uniqueTickers) {
 			candlesByTicker[ticker] = await fetchCandles(
-				{ symbol: ticker, timeframe: spec.universe.timeframe, from, to, session: spec.universe.session },
+				{
+					symbol: ticker,
+					timeframe: spec.universe.timeframe,
+					from,
+					to,
+					session: spec.universe.session
+				},
 				fetch
 			);
 		}

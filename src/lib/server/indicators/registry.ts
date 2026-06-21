@@ -60,9 +60,7 @@ export function assertRegistryCoversCatalog(): IndicatorType[] {
 		if (typeof INDICATOR_REGISTRY[cap.type] !== 'function') missing.push(cap.type);
 	}
 	if (missing.length > 0) {
-		throw new Error(
-			`Indicator registry is missing compute functions for: ${missing.join(', ')}`
-		);
+		throw new Error(`Indicator registry is missing compute functions for: ${missing.join(', ')}`);
 	}
 	return CAPABILITIES.indicators.map((c) => c.type);
 }

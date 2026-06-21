@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { scaleLinear } from 'd3-scale';
-	import { extent, max as d3max, min as d3min } from 'd3-array';
+	import { max as d3max, min as d3min } from 'd3-array';
 	import type { Candle, TradeMarker } from '$lib/types';
 	import { formatCurrency, formatDateTime, formatInt } from '$lib/utils/format';
 	import { chartColors, defaultMargins, downsample, niceTicks } from './theme';
@@ -42,7 +42,11 @@
 	const innerH = $derived(Math.max(0, height - m.top - m.bottom));
 
 	// Index-based x scale so candles are evenly spaced (no weekend gaps).
-	const xScale = $derived(scaleLinear().domain([0, Math.max(1, view.length - 1)]).range([0, innerW]));
+	const xScale = $derived(
+		scaleLinear()
+			.domain([0, Math.max(1, view.length - 1)])
+			.range([0, innerW])
+	);
 	const indexByT = $derived(new Map(view.map((c, i) => [c.t, i])));
 
 	const yLow = $derived(d3min(view, (c) => c.l) ?? 0);
@@ -116,7 +120,11 @@
 
 <div class="chart" use:track>
 	{#if view.length === 0}
-		<EmptyState title="No price data" description="No candles are available for this ticker." compact />
+		<EmptyState
+			title="No price data"
+			description="No candles are available for this ticker."
+			compact
+		/>
 	{:else}
 		<svg
 			{width}
@@ -128,9 +136,8 @@
 			onmouseleave={onleave}
 		>
 			<title
-				>Price candles from {formatDateTime(view[0].t)} to {formatDateTime(
-					view[view.length - 1].t
-				)} with {markers.length} trade markers.</title
+				>Price candles from {formatDateTime(view[0].t)} to {formatDateTime(view[view.length - 1].t)} with
+				{markers.length} trade markers.</title
 			>
 			<g transform="translate({m.left},{m.top})">
 				{#each yTicks as tick (tick)}
@@ -206,17 +213,34 @@
 			>
 				<span class="t-date">{formatDateTime(hover.candle.t)}</span>
 				<dl>
-					<div><dt>O</dt><dd>{formatCurrency(hover.candle.o)}</dd></div>
-					<div><dt>H</dt><dd>{formatCurrency(hover.candle.h)}</dd></div>
-					<div><dt>L</dt><dd>{formatCurrency(hover.candle.l)}</dd></div>
-					<div><dt>C</dt><dd>{formatCurrency(hover.candle.c)}</dd></div>
-					<div><dt>V</dt><dd>{formatInt(hover.candle.v)}</dd></div>
+					<div>
+						<dt>O</dt>
+						<dd>{formatCurrency(hover.candle.o)}</dd>
+					</div>
+					<div>
+						<dt>H</dt>
+						<dd>{formatCurrency(hover.candle.h)}</dd>
+					</div>
+					<div>
+						<dt>L</dt>
+						<dd>{formatCurrency(hover.candle.l)}</dd>
+					</div>
+					<div>
+						<dt>C</dt>
+						<dd>{formatCurrency(hover.candle.c)}</dd>
+					</div>
+					<div>
+						<dt>V</dt>
+						<dd>{formatInt(hover.candle.v)}</dd>
+					</div>
 				</dl>
 			</div>
 		{/if}
 
 		{#if downsampled}
-			<p class="note">Showing {formatInt(view.length)} of {formatInt(parsed.length)} candles (downsampled).</p>
+			<p class="note">
+				Showing {formatInt(view.length)} of {formatInt(parsed.length)} candles (downsampled).
+			</p>
 		{/if}
 	{/if}
 </div>

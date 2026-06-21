@@ -201,12 +201,14 @@ const INDICATORS: IndicatorCapability[] = [
 	}
 ];
 
-const OPERATORS: OperatorCapability[] = [...BINARY_OPERATORS, ...UNARY_OPERATORS, ...RANGE_OPERATORS].map(
-	(id) => {
-		const m = operatorMeta(id);
-		return { id: m.id, label: m.label, arity: m.arity, description: m.description };
-	}
-);
+const OPERATORS: OperatorCapability[] = [
+	...BINARY_OPERATORS,
+	...UNARY_OPERATORS,
+	...RANGE_OPERATORS
+].map((id) => {
+	const m = operatorMeta(id);
+	return { id: m.id, label: m.label, arity: m.arity, description: m.description };
+});
 
 export const CAPABILITIES: Capabilities = {
 	schemaVersion: 1,

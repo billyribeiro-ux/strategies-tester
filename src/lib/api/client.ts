@@ -6,13 +6,7 @@
  * here — results come from the backend, the single source of truth.
  */
 
-import type {
-	BacktestResult,
-	Candle,
-	Capabilities,
-	SavedStrategy,
-	StrategySpec
-} from '$lib/types';
+import type { BacktestResult, Candle, Capabilities, SavedStrategy, StrategySpec } from '$lib/types';
 
 export type FetchFn = typeof fetch;
 
@@ -138,11 +132,7 @@ export function createApiClient(fetchFn: FetchFn = fetch) {
 			),
 
 		listVersions: (id: string) =>
-			request<SavedStrategy[]>(
-				fetchFn,
-				'GET',
-				`/api/strategies/${encodeURIComponent(id)}/versions`
-			)
+			request<SavedStrategy[]>(fetchFn, 'GET', `/api/strategies/${encodeURIComponent(id)}/versions`)
 	};
 }
 
