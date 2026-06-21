@@ -13,7 +13,21 @@ export const load: PageLoad = async ({ fetch, url }): Promise<BuilderData> => {
 	try {
 		const capabilities = await api.getCapabilities();
 		const id = url.searchParams.get('strategyId');
-		const saved = id ? await api.getStrategy(id) : null;
+		const versionParam = url.searchParams.get('version');
+
+		let saved: SavedStrategy | null = null;
+		if (id) {
+			const requestedVersion = versionParam ? Number(versionParam) : null;
+			if (requestedVersion !== null && Number.isFinite(requestedVersion)) {
+				// Open a specific historical version (from the Versions modal). Each
+				// version row already carries its full spec; fall back to the current
+				// strategy if the requested version no longer exists.
+				const versions = await api.listVersions(id);
+				saved = versions.find((v) => v.version === requestedVersion) ?? (await api.getStrategy(id));
+			} else {
+				saved = await api.getStrategy(id);
+			}
+		}
 		return { capabilities, saved, error: null };
 	} catch (err) {
 		const message =
