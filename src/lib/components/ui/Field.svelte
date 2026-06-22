@@ -29,7 +29,7 @@
 
 	const uid = $props.id();
 	const controlId = `${uid}-control`;
-	const labelId = label ? `${uid}-label` : undefined;
+	let labelId = $derived(label ? `${uid}-label` : undefined);
 	let describedBy = $derived(
 		[hint ? `${uid}-hint` : null, error ? `${uid}-error` : null].filter(Boolean).join(' ') ||
 			undefined
