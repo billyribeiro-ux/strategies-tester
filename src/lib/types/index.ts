@@ -2,3 +2,4 @@
 export * from './spec';
 export * from './capabilities';
 export * from './result';
+export * from './optimize';
