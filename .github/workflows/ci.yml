@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [claude/eager-keller-lt44na, main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: local.db
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node from .nvmrc (24.17.0 LTS)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable Corepack (pnpm pinned via packageManager)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Production build
+        run: pnpm build

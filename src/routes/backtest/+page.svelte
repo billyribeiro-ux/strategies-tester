@@ -62,7 +62,12 @@
 
 		<main class="content">
 			{#if store.runError}
-				<Callout tone="danger" title="Backtest failed">{store.runError}</Callout>
+				<Callout tone="danger" title="Backtest failed">
+					{store.runError}
+					{#if /api key/i.test(store.runError)}
+						— <a href="/settings">Add your FMP key in Settings</a>.
+					{/if}
+				</Callout>
 			{/if}
 			{#if store.saveError}
 				<Callout tone="danger" title="Save failed">{store.saveError}</Callout>

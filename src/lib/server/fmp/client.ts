@@ -18,6 +18,7 @@ import { db } from '../db';
 import { candleCache } from '../db/schema';
 import { FMP_KEY, getSetting } from '../db/repository';
 import { createId } from '$lib/utils/id';
+import { MAX_RANGE_YEARS, splitDateRange } from './range';
 
 export type FetchFn = typeof fetch;
 
@@ -125,7 +126,9 @@ export async function fetchCandles(
 		candles = aggregateWeekly(daily);
 	} else if (INTRADAY_INTERVAL[timeframe]) {
 		const interval = INTRADAY_INTERVAL[timeframe];
-		const raw = normalizeBars(await fetchIntraday(symbol, interval, from, to, apiKey, fetchFn));
+		const raw = normalizeBars(
+			await fetchIntradayRange(symbol, interval, from, to, apiKey, fetchFn)
+		);
 		candles = filterSession(raw, query.session ?? { kind: 'RTH' });
 	} else {
 		throw new Error(`Unsupported timeframe "${timeframe}".`);
@@ -173,32 +176,6 @@ async function fetchDailyRange(
 	return all;
 }
 
-const MAX_RANGE_YEARS = 5;
-
-/** Split an inclusive `YYYY-MM-DD` range into adjacent windows of ≤ `maxYears`. */
-function splitDateRange(
-	from: string,
-	to: string,
-	maxYears: number
-): Array<{ from: string; to: string }> {
-	const start = Date.parse(`${from}T00:00:00Z`);
-	const end = Date.parse(`${to}T00:00:00Z`);
-	if (Number.isNaN(start) || Number.isNaN(end) || start >= end) return [{ from, to }];
-	const DAY = 86_400_000;
-	const ymd = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-	const windows: Array<{ from: string; to: string }> = [];
-	let s = start;
-	while (s <= end) {
-		const sd = new Date(s);
-		const capped =
-			Date.UTC(sd.getUTCFullYear() + maxYears, sd.getUTCMonth(), sd.getUTCDate()) - DAY;
-		const e = Math.min(capped, end);
-		windows.push({ from: ymd(s), to: ymd(e) });
-		s = e + DAY;
-	}
-	return windows;
-}
-
 async function fetchIntraday(
 	symbol: string,
 	interval: string,
@@ -209,6 +186,24 @@ async function fetchIntraday(
 ): Promise<FmpBar[]> {
 	const url = `${BASE}/historical-chart/${interval}?symbol=${encodeURIComponent(symbol)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&apikey=${encodeURIComponent(apiKey)}`;
 	return requestArray(url, symbol, fetchFn);
+}
+
+/** Intraday fetch, chunked into ≤5-year windows like the daily path. */
+async function fetchIntradayRange(
+	symbol: string,
+	interval: string,
+	from: string,
+	to: string,
+	apiKey: string,
+	fetchFn: FetchFn
+): Promise<FmpBar[]> {
+	const windows = splitDateRange(from, to, MAX_RANGE_YEARS);
+	if (windows.length <= 1) return fetchIntraday(symbol, interval, from, to, apiKey, fetchFn);
+	const all: FmpBar[] = [];
+	for (const w of windows) {
+		all.push(...(await fetchIntraday(symbol, interval, w.from, w.to, apiKey, fetchFn)));
+	}
+	return all;
 }
 
 /** Fetch JSON and coerce to a bar array, tolerating object-wrapped responses. */
@@ -470,6 +465,20 @@ function isoWeekKey(iso: string): string {
 // Cache (drizzle / better-sqlite3 — synchronous)
 // ---------------------------------------------------------------------------
 
+/**
+ * Fully-historical ranges (ending well in the past) are immutable and cached
+ * indefinitely; ranges touching recent days expire after a short TTL so fresh
+ * bars are refetched rather than served stale.
+ */
+const RECENT_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+function isCacheStale(to: string, fetchedAt: string): boolean {
+	const toMs = Date.parse(`${to}T00:00:00Z`);
+	const immutableBefore = Date.now() - 2 * 86_400_000; // ranges ending >2d ago never change
+	if (Number.isFinite(toMs) && toMs < immutableBefore) return false;
+	const age = Date.now() - Date.parse(fetchedAt);
+	return !(age >= 0 && age < RECENT_CACHE_TTL_MS);
+}
+
 function readCache(symbol: string, timeframe: string, from: string, to: string): Candle[] | null {
 	const rows = db
 		.select()
@@ -485,8 +494,10 @@ function readCache(symbol: string, timeframe: string, from: string, to: string):
 		.limit(1)
 		.all();
 	if (rows.length === 0) return null;
+	const row = rows[0];
+	if (isCacheStale(to, row.fetchedAt)) return null;
 	try {
-		const parsed = JSON.parse(rows[0].data) as Candle[];
+		const parsed = JSON.parse(row.data) as Candle[];
 		return Array.isArray(parsed) ? parsed : null;
 	} catch {
 		return null;
