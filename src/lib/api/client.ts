@@ -13,7 +13,9 @@ import type {
 	OptimizationResult,
 	OptimizationSpec,
 	SavedStrategy,
-	StrategySpec
+	StrategySpec,
+	WalkForwardResult,
+	WalkForwardSpec
 } from '$lib/types';
 
 export type FetchFn = typeof fetch;
@@ -110,6 +112,9 @@ export function createApiClient(fetchFn: FetchFn = fetch) {
 
 		optimize: (spec: OptimizationSpec) =>
 			request<OptimizationResult>(fetchFn, 'POST', '/api/optimize', spec),
+
+		walkForward: (spec: WalkForwardSpec) =>
+			request<WalkForwardResult>(fetchFn, 'POST', '/api/walkforward', spec),
 
 		getResult: (runId: string) =>
 			request<BacktestResult>(fetchFn, 'GET', `/api/runs/${encodeURIComponent(runId)}`),

@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import type { PageData } from './$types';
 	import { createApiClient, ApiError } from '$lib/api/client';
-	import type { OptimizationResult } from '$lib/types';
+	import type { OptimizationResult, WalkForwardResult } from '$lib/types';
 	import {
 		Button,
 		Callout,
@@ -13,7 +13,7 @@
 		LoadingState,
 		Select
 	} from '$lib/components/ui';
-	import { Sliders, Play, WarningCircle } from 'phosphor-svelte';
+	import { Sliders, Play, WarningCircle, ChartLineUp } from 'phosphor-svelte';
 	import { formatPercent, formatSignedPercent, formatRatio } from '$lib/utils/format';
 
 	let { data }: { data: PageData } = $props();
@@ -80,12 +80,20 @@
 	let runError = $state<string | null>(null);
 	let result = $state<OptimizationResult | null>(null);
 
+	// Walk-forward state.
+	let windows = $state(4);
+	let wfRunning = $state(false);
+	let wfError = $state<string | null>(null);
+	let wf = $state<WalkForwardResult | null>(null);
+
 	// Clear stale results when the strategy selection changes.
 	$effect(() => {
 		void selectedId;
 		untrack(() => {
 			result = null;
 			runError = null;
+			wf = null;
+			wfError = null;
 		});
 	});
 
@@ -107,15 +115,14 @@
 	const comboCount = $derived(params.reduce((n, p) => n * p.values.length, params.length ? 1 : 0));
 	const canRun = $derived(!!selected && params.length > 0);
 
-	// Column labels for the swept params, taken from the result so they stay
-	// consistent with the ranked rows even if inputs change afterwards.
-	const sweptCols = $derived(
-		(result?.combos[0]?.overrides ?? []).map((o) => {
-			const inst = selected?.spec.indicators.find((i) => i.id === o.indicatorId);
-			const cap = data.capabilities?.indicators.find((c) => c.type === inst?.type);
-			return `${inst?.label ?? cap?.label ?? o.indicatorId} · ${o.param}`;
-		})
-	);
+	// Column labels for swept params (consistent across the ranked rows / windows).
+	function overrideLabel(o: { indicatorId: string; param: string }) {
+		const inst = selected?.spec.indicators.find((i) => i.id === o.indicatorId);
+		const cap = data.capabilities?.indicators.find((c) => c.type === inst?.type);
+		return `${inst?.label ?? cap?.label ?? o.indicatorId} · ${o.param}`;
+	}
+	const sweptCols = $derived((result?.combos[0]?.overrides ?? []).map(overrideLabel));
+	const wfCols = $derived((wf?.windows[0]?.bestOverrides ?? []).map(overrideLabel));
 
 	async function run() {
 		if (!selected || !canRun) return;
@@ -128,6 +135,20 @@
 			runError = e instanceof ApiError ? e.message : 'Optimization failed.';
 		} finally {
 			running = false;
+		}
+	}
+
+	async function runWalkForward() {
+		if (!selected || !canRun) return;
+		wfError = null;
+		wfRunning = true;
+		wf = null;
+		try {
+			wf = await api.walkForward({ base: selected.spec, params, sortMetric, windows });
+		} catch (e) {
+			wfError = e instanceof ApiError ? e.message : 'Walk-forward failed.';
+		} finally {
+			wfRunning = false;
 		}
 	}
 </script>
@@ -198,6 +219,19 @@
 							{#snippet icon()}<Play size={16} weight="fill" />{/snippet}
 							Run {comboCount} backtest{comboCount === 1 ? '' : 's'}
 						</Button>
+						<label class="wf-windows">
+							Walk-forward windows
+							<input type="number" min="2" max="12" bind:value={windows} />
+						</label>
+						<Button
+							variant="secondary"
+							onclick={runWalkForward}
+							loading={wfRunning}
+							disabled={!canRun}
+						>
+							{#snippet icon()}<ChartLineUp size={16} />{/snippet}
+							Walk-forward
+						</Button>
 						{#if !canRun}
 							<span class="hint">Enable at least one parameter and enter values.</span>
 						{/if}
@@ -263,6 +297,75 @@
 					</div>
 				</Card>
 			{/if}
+		{/if}
+		{#if wfError}
+			<Callout tone="danger" title="Walk-forward failed">
+				{#snippet icon()}<WarningCircle size={16} weight="fill" />{/snippet}
+				{wfError}
+				{#if /api key/i.test(wfError)}
+					— <a href="/settings">Add your FMP key in Settings</a>.
+				{/if}
+			</Callout>
+		{/if}
+
+		{#if wfRunning}
+			<LoadingState label="Running walk-forward…" />
+		{:else if wf}
+			{#if wf.warnings.length}
+				<Callout tone="warning" title="Note">{wf.warnings.join(' ')}</Callout>
+			{/if}
+			<Card>
+				<div class="results">
+					<div class="wf-summary">
+						<div class="kv">
+							<span class="k">Combined OOS return</span>
+							<span class="v">{formatSignedPercent(wf.combinedOosReturn)}</span>
+						</div>
+						<div class="kv">
+							<span class="k">WF efficiency</span>
+							<span class="v">{formatRatio(wf.efficiency)}</span>
+						</div>
+						<div class="kv">
+							<span class="k">Windows</span>
+							<span class="v">{wf.windows.length}</span>
+						</div>
+					</div>
+					<p class="summary">
+						Out-of-sample (unseen) performance after optimizing on each in-sample window — the
+						overfitting-resistant view.
+					</p>
+					<div class="table-wrap">
+						<table>
+							<thead>
+								<tr>
+									<th class="num">#</th>
+									<th>OOS period</th>
+									{#each wfCols as col (col)}<th>{col}</th>{/each}
+									<th class="num">OOS return</th>
+									<th class="num">OOS Sharpe</th>
+									<th class="num">OOS Max DD</th>
+									<th class="num">Trades</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each wf.windows as w (w.index)}
+									<tr>
+										<td class="num">{w.index}</td>
+										<td>{w.oosFrom} → {w.oosTo}</td>
+										{#each w.bestOverrides as o (o.indicatorId + o.param)}
+											<td class="num">{o.value}</td>
+										{/each}
+										<td class="num">{formatSignedPercent(w.oosTotalReturn)}</td>
+										<td class="num">{formatRatio(w.oosSharpe)}</td>
+										<td class="num">{formatPercent(w.oosMaxDrawdown)}</td>
+										<td class="num">{w.oosTrades}</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</Card>
 		{/if}
 	</div>
 {/if}
@@ -351,6 +454,41 @@
 		font-size: var(--fs-sm);
 		color: var(--c-text-muted);
 		margin-bottom: var(--sp-3);
+	}
+	.wf-windows {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+		font-size: var(--fs-sm);
+		color: var(--c-text-muted);
+	}
+	.wf-windows input {
+		width: 4rem;
+		padding: 0.375rem var(--sp-2);
+		border: 1px solid var(--c-border-strong);
+		border-radius: var(--radius);
+		background: var(--c-surface);
+		color: var(--c-text);
+	}
+	.wf-summary {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--sp-5);
+		margin-bottom: var(--sp-3);
+	}
+	.kv {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
+	}
+	.kv .k {
+		font-size: var(--fs-xs);
+		color: var(--c-text-muted);
+	}
+	.kv .v {
+		font-size: var(--fs-lg);
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
 	}
 	.table-wrap {
 		overflow-x: auto;
