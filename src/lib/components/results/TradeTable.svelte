@@ -116,6 +116,14 @@
 		})()
 	);
 
+	// Render cap — large ledgers (thousands of rows) are expensive to lay out, so
+	// the DOM is bounded by default while filtering/sorting/totals/export still
+	// operate on the full `filteredSorted`. A toggle reveals every row on demand.
+	const RENDER_CAP = 300;
+	let showAll = $state(false);
+	const isCapped = $derived(!showAll && filteredSorted.length > RENDER_CAP);
+	const visibleRows = $derived(isCapped ? filteredSorted.slice(0, RENDER_CAP) : filteredSorted);
+
 	// Expose the current filtered+sorted trades to the parent for export.
 	const exportTrades = $derived(filteredSorted.map((r) => r.t));
 	$effect(() => {
@@ -144,8 +152,18 @@
 	<div class="toolbar">
 		<p class="count">
 			Showing <strong>{formatInt(filteredSorted.length)}</strong> of {formatInt(trades.length)} trades
+			{#if isCapped}
+				<span class="cap-note">· {formatInt(RENDER_CAP)} rendered</span>
+			{/if}
 		</p>
 		<div class="tools">
+			{#if filteredSorted.length > RENDER_CAP}
+				<button type="button" class="show-all" onclick={() => (showAll = !showAll)}>
+					{showAll
+						? 'Render first ' + formatInt(RENDER_CAP)
+						: 'Render all ' + formatInt(filteredSorted.length)}
+				</button>
+			{/if}
 			{#if hasActiveFilters}
 				<IconButton label="Clear filters" size="sm" variant="danger" onclick={clearFilters}>
 					<FunnelX size={16} />
@@ -230,7 +248,7 @@
 			</thead>
 
 			<tbody>
-				{#each filteredSorted as row (row.t.id)}
+				{#each visibleRows as row (row.t.id)}
 					<tr class={cellTone(row.t)}>
 						{#each LEDGER_COLUMNS as col (col.key)}
 							<td class:num={alignRight(col)}>{col.display(row.t, row.i)}</td>
@@ -243,6 +261,16 @@
 						>
 					</tr>
 				{/each}
+				{#if isCapped}
+					<tr>
+						<td class="cap-row" colspan={LEDGER_COLUMNS.length}>
+							{formatInt(filteredSorted.length - RENDER_CAP)} more rows hidden for performance —
+							<button type="button" class="link" onclick={() => (showAll = true)}>render all</button
+							>
+							(totals and exports already include every trade).
+						</td>
+					</tr>
+				{/if}
 			</tbody>
 
 			<tfoot>
@@ -295,9 +323,32 @@
 		color: var(--c-text);
 		font-variant-numeric: tabular-nums;
 	}
+	.cap-note {
+		color: var(--c-text-faint);
+		font-variant-numeric: tabular-nums;
+	}
 	.tools {
 		display: flex;
-		gap: var(--sp-1);
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	.show-all {
+		padding: 0.25rem 0.6rem;
+		background: var(--c-surface-2);
+		border: 1px solid var(--c-border-strong);
+		border-radius: var(--radius-sm);
+		color: var(--c-text-muted);
+		font-size: var(--fs-xs);
+		font-weight: 600;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.show-all:hover {
+		color: var(--c-text);
+		border-color: var(--c-primary);
+	}
+	.show-all:focus-visible {
+		box-shadow: var(--focus-ring);
 	}
 
 	.scroll {
@@ -408,6 +459,26 @@
 		text-align: center;
 		color: var(--c-text-muted);
 		padding: var(--sp-6);
+	}
+	.cap-row {
+		text-align: center;
+		color: var(--c-text-muted);
+		padding: var(--sp-3);
+		background: var(--c-surface-2);
+		font-size: var(--fs-xs);
+	}
+	.link {
+		padding: 0;
+		background: none;
+		border: none;
+		color: var(--c-primary);
+		font: inherit;
+		font-weight: 600;
+		cursor: pointer;
+		text-decoration: underline;
+	}
+	.link:hover {
+		color: var(--c-primary-hover);
 	}
 
 	tfoot td {
