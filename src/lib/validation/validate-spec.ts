@@ -92,8 +92,28 @@ export function issuesByNode(issues: SpecIssue[]): Map<string, SpecIssue[]> {
 
 function validateUniverse(spec: StrategySpec, ctx: Ctx) {
 	const u = spec.universe;
-	if (u.tickers.length === 0 || u.tickers.every((t) => !t.trim())) {
+	const isIndexSource = u.source?.kind === 'index';
+	// An index source resolves its own tickers point-in-time at run time, so an
+	// empty explicit list is fine there (it is only a fallback/seed). For the
+	// default explicit source, at least one ticker is required.
+	if (!isIndexSource && (u.tickers.length === 0 || u.tickers.every((t) => !t.trim()))) {
 		add(ctx, 'error', 'universe.tickers', 'Add at least one ticker.');
+	}
+	if (u.source?.kind === 'index') {
+		if (u.source.provider !== 'fmpPit') {
+			add(ctx, 'error', 'universe.source.provider', 'Index source provider must be "fmpPit".');
+		}
+		if (!u.source.index.trim()) {
+			add(ctx, 'error', 'universe.source.index', 'Choose an index (e.g. "sp500").');
+		}
+		if (u.source.maxSymbols !== undefined && !isPositiveInt(u.source.maxSymbols)) {
+			add(
+				ctx,
+				'error',
+				'universe.source.maxSymbols',
+				'Max symbols must be a positive whole number.'
+			);
+		}
 	}
 	if (!ctx.timeframeIds.has(u.timeframe)) {
 		add(ctx, 'error', 'universe.timeframe', `Unknown timeframe "${u.timeframe}".`);

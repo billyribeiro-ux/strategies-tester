@@ -33,7 +33,8 @@ import type {
 	StrategySpec,
 	TakeProfit,
 	TimeframeId,
-	TrailingStop
+	TrailingStop,
+	UniverseSource
 } from '$lib/types';
 import {
 	createDefaultSpec,
@@ -126,6 +127,18 @@ export class StrategyStore {
 
 	setBenchmark = (symbol: string) => {
 		this.spec.universe.benchmark = symbol.trim() || undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * How the run resolves its tradeable tickers. `{ kind: 'tickers' }` (or
+	 * undefined) is the default explicit behaviour; `{ kind: 'index', ... }`
+	 * resolves point-in-time index members at run time. Setting `'tickers'`
+	 * clears the source entirely so backward-compatible specs stay clean.
+	 */
+	setUniverseSource = (source: UniverseSource | undefined) => {
+		this.spec.universe.source =
+			source === undefined || source.kind === 'tickers' ? undefined : source;
 		this.markDirty();
 	};
 

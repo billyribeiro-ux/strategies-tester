@@ -49,11 +49,31 @@ export interface DateRange {
 	to: string;
 }
 
+/**
+ * Where the run's tradeable ticker set comes from.
+ *
+ * - `tickers` (default, omitted == this): use `Universe.tickers` verbatim — the
+ *   explicit, fully backward-compatible behaviour.
+ * - `index`: resolve point-in-time INDEX members at the run window via a
+ *   survivorship-free provider (e.g. FMP PIT). `Universe.tickers` is still kept
+ *   on the spec and used as a fallback/seed if resolution yields nothing.
+ */
+export type UniverseSource =
+	| { kind: 'tickers' }
+	| { kind: 'index'; provider: 'fmpPit'; index: string; maxSymbols?: number };
+
 export interface Universe {
 	tickers: string[];
 	timeframe: TimeframeId;
 	dateRange: DateRange;
 	session: SessionSpec;
+	/**
+	 * How the tradeable ticker set is resolved for the run. Omitted (or
+	 * `{ kind: 'tickers' }`) means use `tickers` verbatim — the default,
+	 * backward-compatible behaviour. `{ kind: 'index', ... }` resolves
+	 * point-in-time index members over the run window instead.
+	 */
+	source?: UniverseSource;
 	/** Optional buy-and-hold comparison ticker (e.g. 'SPY') overlaid on results. */
 	benchmark?: string;
 }

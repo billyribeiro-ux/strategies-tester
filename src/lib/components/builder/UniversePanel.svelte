@@ -1,7 +1,15 @@
 <script lang="ts">
 	import type { SessionSpec } from '$lib/types';
 	import type { StrategyStore } from '$lib/stores/strategy.svelte';
-	import { Button, Field, IconButton, Select, TextInput } from '$lib/components/ui';
+	import {
+		Button,
+		Field,
+		IconButton,
+		NumberInput,
+		SegmentedControl,
+		Select,
+		TextInput
+	} from '$lib/components/ui';
 	import { Globe, Plus, X } from 'phosphor-svelte';
 
 	interface Props {
@@ -11,6 +19,44 @@
 	let { store }: Props = $props();
 
 	let tickerDraft = $state('');
+
+	// --- universe source (explicit tickers vs point-in-time index) ----------
+
+	const DEFAULT_INDEX = 'sp500';
+	const DEFAULT_MAX_SYMBOLS = 25;
+
+	const sourceKind = $derived(store.spec.universe.source?.kind ?? 'tickers');
+	const indexSource = $derived(
+		store.spec.universe.source?.kind === 'index' ? store.spec.universe.source : null
+	);
+
+	const sourceOptions = [
+		{ value: 'tickers', label: 'Tickers' },
+		{ value: 'index', label: 'Index' }
+	];
+
+	function setSourceKind(kind: string) {
+		if (kind === sourceKind) return;
+		if (kind === 'index') {
+			store.setUniverseSource({ kind: 'index', provider: 'fmpPit', index: DEFAULT_INDEX });
+		} else {
+			store.setUniverseSource({ kind: 'tickers' });
+		}
+	}
+
+	function setIndex(index: string) {
+		const cur = indexSource;
+		if (!cur) return;
+		store.setUniverseSource({ ...cur, index });
+	}
+
+	function setMaxSymbols(max: number | undefined) {
+		const cur = indexSource;
+		if (!cur) return;
+		const maxSymbols =
+			typeof max === 'number' && Number.isFinite(max) && max > 0 ? Math.floor(max) : undefined;
+		store.setUniverseSource({ ...cur, maxSymbols });
+	}
 
 	function commitTicker() {
 		const parts = tickerDraft
@@ -127,52 +173,95 @@
 	</header>
 
 	<div class="body">
-		<!-- Tickers -->
-		<Field
-			label="Tickers"
-			hint="Type a symbol and press Enter. Add as many as you like."
-			error={tickersError}
-		>
-			{#snippet children({ id, describedBy, invalid })}
-				<div class="ticker-add">
-					<input
-						{id}
-						class="ticker-input"
-						placeholder="AAPL"
-						autocapitalize="characters"
-						aria-describedby={describedBy}
-						aria-invalid={invalid || undefined}
-						bind:value={tickerDraft}
-						onkeydown={onTickerKeydown}
-					/>
-					<Button
-						size="sm"
-						variant="secondary"
-						onclick={commitTicker}
-						disabled={!tickerDraft.trim()}
-					>
-						{#snippet icon()}<Plus size={14} weight="bold" />{/snippet}
-						Add
-					</Button>
-				</div>
-			{/snippet}
-		</Field>
+		<!-- Universe source -->
+		<div class="source-block">
+			<span class="seg-label">Universe source</span>
+			<SegmentedControl
+				label="Universe source"
+				options={sourceOptions}
+				bind:value={() => sourceKind, setSourceKind}
+			/>
+		</div>
 
-		{#if store.spec.universe.tickers.length > 0}
-			<ul class="chips">
-				{#each store.spec.universe.tickers as ticker (ticker)}
-					<li class="chip">
-						<span>{ticker}</span>
-						<IconButton
-							label="Remove {ticker}"
+		{#if sourceKind === 'tickers'}
+			<!-- Tickers -->
+			<Field
+				label="Tickers"
+				hint="Type a symbol and press Enter. Add as many as you like."
+				error={tickersError}
+			>
+				{#snippet children({ id, describedBy, invalid })}
+					<div class="ticker-add">
+						<input
+							{id}
+							class="ticker-input"
+							placeholder="AAPL"
+							autocapitalize="characters"
+							aria-describedby={describedBy}
+							aria-invalid={invalid || undefined}
+							bind:value={tickerDraft}
+							onkeydown={onTickerKeydown}
+						/>
+						<Button
 							size="sm"
-							onclick={() => store.removeTicker(ticker)}
+							variant="secondary"
+							onclick={commitTicker}
+							disabled={!tickerDraft.trim()}
 						>
-							<X size={12} weight="bold" />
-						</IconButton>
-					</li>
-				{/each}
-			</ul>
+							{#snippet icon()}<Plus size={14} weight="bold" />{/snippet}
+							Add
+						</Button>
+					</div>
+				{/snippet}
+			</Field>
+
+			{#if store.spec.universe.tickers.length > 0}
+				<ul class="chips">
+					{#each store.spec.universe.tickers as ticker (ticker)}
+						<li class="chip">
+							<span>{ticker}</span>
+							<IconButton
+								label="Remove {ticker}"
+								size="sm"
+								onclick={() => store.removeTicker(ticker)}
+							>
+								<X size={12} weight="bold" />
+							</IconButton>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		{:else if indexSource}
+			<!-- Point-in-time index membership -->
+			<div class="grid-2">
+				<Field label="Provider" hint="Survivorship-free, resolved at the run's start date.">
+					{#snippet children({ id })}
+						<input
+							{id}
+							class="ticker-input provider-fixed"
+							value="FMP point-in-time"
+							readonly
+							aria-readonly="true"
+						/>
+					{/snippet}
+				</Field>
+				<TextInput
+					label="Index"
+					placeholder="sp500"
+					hint="Index slug (e.g. sp500)."
+					value={indexSource.index}
+					oninput={(e) => setIndex(e.currentTarget.value)}
+				/>
+			</div>
+			<NumberInput
+				label="Max symbols (optional)"
+				hint="Cap the resolved members for this run. Default {DEFAULT_MAX_SYMBOLS}, hard cap 50."
+				min={1}
+				step={1}
+				placeholder={String(DEFAULT_MAX_SYMBOLS)}
+				suffix="symbols"
+				bind:value={() => indexSource.maxSymbols ?? DEFAULT_MAX_SYMBOLS, setMaxSymbols}
+			/>
 		{/if}
 
 		<!-- Timeframe -->
@@ -356,10 +445,16 @@
 		grid-template-columns: 1fr;
 		gap: var(--sp-3);
 	}
-	.session-block {
+	.session-block,
+	.source-block {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
+	}
+	.provider-fixed {
+		text-transform: none;
+		color: var(--c-text-muted);
+		cursor: default;
 	}
 	.seg-label {
 		font-size: var(--fs-sm);

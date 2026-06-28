@@ -139,6 +139,62 @@ describe('validateSpec', () => {
 		);
 	});
 
+	it('passes a valid index universe source with no explicit tickers', () => {
+		const spec = validSpec();
+		spec.universe.tickers = []; // index resolves its own members PIT
+		spec.universe.source = { kind: 'index', provider: 'fmpPit', index: 'sp500' };
+		expect(hasErrors(v(spec))).toBe(false);
+	});
+
+	it('still requires tickers when the source is explicit (default)', () => {
+		const spec = validSpec();
+		spec.universe.tickers = [];
+		spec.universe.source = { kind: 'tickers' };
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'universe.tickers' && i.severity === 'error')).toBe(true);
+	});
+
+	it('errors on an empty index slug for an index source', () => {
+		const spec = validSpec();
+		spec.universe.source = { kind: 'index', provider: 'fmpPit', index: '   ' };
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'universe.source.index' && i.severity === 'error')).toBe(
+			true
+		);
+	});
+
+	it('errors on a non-positive maxSymbols for an index source', () => {
+		const spec = validSpec();
+		spec.universe.source = { kind: 'index', provider: 'fmpPit', index: 'sp500', maxSymbols: 0 };
+		const issues = v(spec);
+		expect(
+			issues.some((i) => i.path === 'universe.source.maxSymbols' && i.severity === 'error')
+		).toBe(true);
+	});
+
+	it('errors on a non-integer maxSymbols for an index source', () => {
+		const spec = validSpec();
+		spec.universe.source = { kind: 'index', provider: 'fmpPit', index: 'sp500', maxSymbols: 12.5 };
+		const issues = v(spec);
+		expect(
+			issues.some((i) => i.path === 'universe.source.maxSymbols' && i.severity === 'error')
+		).toBe(true);
+	});
+
+	it('errors on an unsupported index provider', () => {
+		const spec = validSpec();
+		// Construct an invalid provider deliberately to exercise the semantic guard.
+		spec.universe.source = {
+			kind: 'index',
+			provider: 'bogus',
+			index: 'sp500'
+		} as unknown as StrategySpec['universe']['source'];
+		const issues = v(spec);
+		expect(
+			issues.some((i) => i.path === 'universe.source.provider' && i.severity === 'error')
+		).toBe(true);
+	});
+
 	it('requires a component for multi-output indicators', () => {
 		const spec = validSpec();
 		const macd = createIndicatorInstance(indicatorCapability('macd')!);

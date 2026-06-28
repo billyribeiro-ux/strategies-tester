@@ -125,11 +125,22 @@ const sessionSchema = z.discriminatedUnion('kind', [
 	})
 ]);
 
+const universeSourceSchema = z.union([
+	z.object({ kind: z.literal('tickers') }),
+	z.object({
+		kind: z.literal('index'),
+		provider: z.literal('fmpPit'),
+		index: z.string().min(1),
+		maxSymbols: z.number().int().positive().optional()
+	})
+]);
+
 const universeSchema = z.object({
 	tickers: z.array(z.string()),
 	timeframe: z.string().min(1),
 	dateRange: z.object({ from: z.string(), to: z.string() }),
 	session: sessionSchema,
+	source: universeSourceSchema.optional(),
 	benchmark: z.string().optional()
 });
 
