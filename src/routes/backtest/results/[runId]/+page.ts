@@ -1,4 +1,6 @@
+import { browser } from '$app/environment';
 import { createApiClient, ApiError } from '$lib/api/client';
+import { peekRun } from '$lib/stores/runCache';
 import type { BacktestResult } from '$lib/types';
 import type { PageLoad } from './$types';
 
@@ -18,6 +20,15 @@ export interface ResultsPageData {
  * boundary — keeping 404/empty/error handling inside the results layout.
  */
 export const load: PageLoad = async ({ params, fetch }): Promise<ResultsPageData> => {
+	// Fast path (browser-only): if we just ran this strategy in the builder the
+	// full result is already in hand — render it directly, skipping the network
+	// round-trip that would otherwise 404 if the run was evicted from local.db.
+	// SSR / deep-links / reloads fall through to the fetch below.
+	if (browser) {
+		const cached = peekRun(params.runId);
+		if (cached) return { result: cached, loadError: null };
+	}
+
 	const api = createApiClient(fetch);
 	try {
 		const result = await api.getResult(params.runId);

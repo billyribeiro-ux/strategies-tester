@@ -45,6 +45,7 @@ import { exportSpecJSON, importSpecJSON } from '$lib/spec/serialize';
 import { hasErrors, issuesByNode, validateSpec } from '$lib/validation';
 import { isGroup } from '$lib/validation/guards';
 import { ApiError, createApiClient } from '$lib/api/client';
+import { rememberRun } from '$lib/stores/runCache';
 
 export class StrategyStore {
 	spec = $state<StrategySpec>(createDefaultSpec());
@@ -378,6 +379,10 @@ export class StrategyStore {
 		this.runError = null;
 		try {
 			const res = await createApiClient().runBacktest(this.snapshot());
+			// Carry the result in-hand to the results page so it renders without a
+			// second round-trip (which would 404 if the run is evicted from the
+			// ephemeral DB before the results `load` fetches it). See runCache.
+			rememberRun(res);
 			return res.runId;
 		} catch (err) {
 			this.runError = err instanceof ApiError ? err.message : 'Backtest failed. Please try again.';
