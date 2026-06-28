@@ -196,6 +196,20 @@ describe('resultToJson', () => {
 		monthlyReturns: [{ year: 2024, month: 1, returnPct: 0.05 }],
 		distribution: [{ lower: -0.1, upper: 0, count: 1 }],
 		warnings: ['heads up'],
+		audit: {
+			fillModel: 'nextOpen',
+			orderType: 'market',
+			commissionMode: 'none',
+			slippageMode: 'none',
+			initialCapital: 100000,
+			liquidityCapPct: null,
+			timeframe: '1d',
+			bars: 1,
+			tickers: ['AAPL'],
+			lookaheadOptimistic: false,
+			schemaVersion: 1,
+			computedAt: '2024-12-31T00:00:00.000Z'
+		},
 		computedAt: '2024-12-31T00:00:00.000Z'
 	};
 
@@ -257,6 +271,20 @@ describe('buildWorkbook (smoke)', () => {
 			monthlyReturns: [{ year: 2024, month: 1, returnPct: 0.05 }],
 			distribution: [{ lower: -0.1, upper: 0, count: 1 }],
 			warnings: [],
+			audit: {
+				fillModel: 'nextOpen',
+				orderType: 'market',
+				commissionMode: 'none',
+				slippageMode: 'none',
+				initialCapital: 100000,
+				liquidityCapPct: null,
+				timeframe: '1d',
+				bars: 2,
+				tickers: ['AAPL'],
+				lookaheadOptimistic: false,
+				schemaVersion: 1,
+				computedAt: '2024-12-31T00:00:00.000Z'
+			},
 			computedAt: '2024-12-31T00:00:00.000Z'
 		};
 

@@ -2,7 +2,7 @@
 	import type { FillModel, OrderType } from '$lib/types';
 	import { assertNever } from '$lib/utils/assert-never';
 	import type { StrategyStore } from '$lib/stores/strategy.svelte';
-	import { Callout, Field, Panel, Select } from '$lib/components/ui';
+	import { Callout, Field, NumberInput, Panel, Select } from '$lib/components/ui';
 	import { Info, Lightning } from 'phosphor-svelte';
 
 	interface Props {
@@ -42,6 +42,7 @@
 	);
 
 	const fillOn = $derived(store.spec.execution.fillOn);
+	const liquidityCap = $derived(store.spec.execution.maxBarVolumePct ?? 0);
 </script>
 
 <Panel title="Execution" description="How signalled orders are filled.">
@@ -71,6 +72,18 @@
 			label="Order type"
 			options={orderOptions}
 			bind:value={() => store.spec.execution.orderType, (v) => store.setOrderType(v as OrderType)}
+		/>
+
+		<NumberInput
+			label="Max % of bar volume (liquidity cap)"
+			hint="Caps each fill at this share of the bar's volume. Leave 0 (or empty) for no cap."
+			min={0}
+			max={100}
+			step={1}
+			suffix="%"
+			bind:value={
+				() => liquidityCap, (pct) => store.setExecutionLiquidityCap(pct > 0 ? pct : undefined)
+			}
 		/>
 	</div>
 

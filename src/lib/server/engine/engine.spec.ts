@@ -93,7 +93,8 @@ function baseSpec(overrides: Partial<StrategySpec> = {}): StrategySpec {
 /** Drop fields that legitimately vary between runs (runId, timestamps). */
 function normalize(result: ReturnType<typeof runBacktest>) {
 	const trades = result.trades.map((t) => ({ ...t, id: 'x' }));
-	return { ...result, runId: 'x', computedAt: 'x', trades };
+	const audit = { ...result.audit, computedAt: 'x' };
+	return { ...result, runId: 'x', computedAt: 'x', trades, audit };
 }
 
 // ---------------------------------------------------------------------------
@@ -319,5 +320,111 @@ describe('runBacktest — short side', () => {
 		const t = result.trades[0];
 		expect(t.side).toBe('short');
 		expect(t.pnl).toBeGreaterThan(0);
+	});
+});
+
+describe('runBacktest — audit record (§8/§10)', () => {
+	it('captures execution assumptions; lookaheadOptimistic=true for close fills', () => {
+		const spec = baseSpec({
+			universe: { ...baseSpec().universe, tickers: ['TEST'], timeframe: '1h' },
+			risk: {
+				...baseSpec().risk,
+				initialCapital: 50_000,
+				commission: { mode: 'perShare', perShare: 0.01 },
+				slippage: { mode: 'percent', percent: 0.1 }
+			},
+			execution: { fillOn: 'close', orderType: 'market' }
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 108]) };
+		const result = runBacktest(spec, data);
+
+		expect(result.audit.fillModel).toBe('close');
+		expect(result.audit.orderType).toBe('market');
+		expect(result.audit.commissionMode).toBe('perShare');
+		expect(result.audit.slippageMode).toBe('percent');
+		expect(result.audit.initialCapital).toBe(50_000);
+		expect(result.audit.timeframe).toBe('1h');
+		expect(result.audit.tickers).toEqual(['TEST']);
+		expect(result.audit.bars).toBe(5);
+		expect(result.audit.liquidityCapPct).toBeNull();
+		expect(result.audit.lookaheadOptimistic).toBe(true);
+		expect(result.audit.schemaVersion).toBe(spec.schemaVersion);
+		// computedAt is reused from the result so the two stay in lockstep.
+		expect(result.audit.computedAt).toBe(result.computedAt);
+	});
+
+	it('lookaheadOptimistic=false for the realistic nextOpen fill model', () => {
+		const result = runBacktest(
+			baseSpec({ execution: { fillOn: 'nextOpen', orderType: 'market' } }),
+			{ TEST: candles([100, 101, 102]) }
+		);
+		expect(result.audit.fillModel).toBe('nextOpen');
+		expect(result.audit.lookaheadOptimistic).toBe(false);
+	});
+});
+
+describe('runBacktest — liquidity cap (§2.3)', () => {
+	it('caps fill qty at floor(volume * pct/100) and warns once', () => {
+		// Volume is 1000/bar (see candles()). 5% cap → max 50 shares per fill.
+		// fixedShares wants 100, so the cap must bite.
+		const spec = baseSpec({
+			risk: { ...baseSpec().risk, positionSizing: { mode: 'fixedShares', shares: 100 } },
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			},
+			execution: { fillOn: 'nextOpen', orderType: 'market', maxBarVolumePct: 5 }
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 108, 104, 102, 100]) };
+		const result = runBacktest(spec, data);
+
+		expect(result.trades.length).toBe(1);
+		const cap = Math.floor((1000 * 5) / 100); // 50
+		expect(result.trades[0].qty).toBeLessThanOrEqual(cap);
+		expect(result.trades[0].qty).toBe(cap);
+		expect(result.audit.liquidityCapPct).toBe(5);
+		expect(
+			result.warnings.some((w) => /Liquidity cap limited fill size on 1 orders\./.test(w))
+		).toBe(true);
+	});
+
+	it('leaves qty unchanged and emits no warning when uncapped', () => {
+		const spec = baseSpec({
+			risk: { ...baseSpec().risk, positionSizing: { mode: 'fixedShares', shares: 100 } },
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 108, 104, 102, 100]) };
+		const result = runBacktest(spec, data);
+
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].qty).toBe(100);
+		expect(result.audit.liquidityCapPct).toBeNull();
+		expect(result.warnings.some((w) => /Liquidity cap/.test(w))).toBe(false);
+	});
+
+	it('skips the entry when the cap reduces qty to zero', () => {
+		// 0.05% of volume 1000 = floor(0.5) = 0 shares → no trade.
+		const spec = baseSpec({
+			risk: { ...baseSpec().risk, positionSizing: { mode: 'fixedShares', shares: 100 } },
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: emptyGroup(),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			},
+			execution: { fillOn: 'nextOpen', orderType: 'market', maxBarVolumePct: 0.05 }
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 108]) };
+		const result = runBacktest(spec, data);
+
+		expect(result.trades.length).toBe(0);
+		expect(result.warnings.some((w) => /Liquidity cap limited fill size/.test(w))).toBe(true);
 	});
 });

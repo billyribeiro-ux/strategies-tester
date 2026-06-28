@@ -126,6 +126,7 @@ export function defaultRisk(): Risk {
 }
 
 export function defaultExecution(): Execution {
+	// maxBarVolumePct omitted on purpose: uncapped fills by default (§2.3).
 	return { fillOn: 'nextOpen', orderType: 'market' };
 }
 

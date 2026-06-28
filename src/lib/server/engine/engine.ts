@@ -14,6 +14,7 @@
  */
 
 import type {
+	AuditRecord,
 	BacktestResult,
 	Candle,
 	EquityPoint,
@@ -327,6 +328,29 @@ export function runBacktest(
 	const maxPositions = spec.risk.maxConcurrentPositions;
 	const pyramiding = spec.risk.pyramiding;
 
+	// §2.3 Liquidity cap: limit a single fill to a share of the fill bar's volume.
+	// undefined/<=0 disables the cap. We warn ONCE per run if it ever bites.
+	const rawCap = spec.execution.maxBarVolumePct;
+	const liquidityCapPct = typeof rawCap === 'number' && rawCap > 0 ? rawCap : null;
+	let liquidityCapHits = 0;
+
+	/**
+	 * Apply the liquidity cap to a desired (already-sized) quantity for a fill on
+	 * `td` at `fillBarIndex`. Returns the capped quantity; counts a hit whenever a
+	 * non-zero desire is reduced (including to zero) by the cap.
+	 */
+	function applyLiquidityCap(desiredQty: number, td: TickerData, fillBarIndex: number): number {
+		if (liquidityCapPct === null || desiredQty <= 0) return desiredQty;
+		const volume = td.candles[fillBarIndex].v;
+		if (!Number.isFinite(volume) || volume <= 0) return desiredQty;
+		const maxQty = Math.floor((volume * liquidityCapPct) / 100);
+		if (desiredQty > maxQty) {
+			liquidityCapHits++;
+			return maxQty;
+		}
+		return desiredQty;
+	}
+
 	const tickerByName = new Map(tickers.map((t) => [t.ticker, t]));
 
 	/** Mark-to-market equity at a timeline timestamp. */
@@ -462,6 +486,26 @@ export function runBacktest(
 
 	if (trades.length === 0) warnings.push('No trades were generated for this strategy and data.');
 
+	if (liquidityCapHits > 0) {
+		warnings.push(`Liquidity cap limited fill size on ${liquidityCapHits} orders.`);
+	}
+
+	const computedAt = new Date().toISOString();
+	const audit: AuditRecord = {
+		fillModel,
+		orderType: spec.execution.orderType,
+		commissionMode: spec.risk.commission.mode,
+		slippageMode: spec.risk.slippage.mode,
+		initialCapital,
+		liquidityCapPct,
+		timeframe: spec.universe.timeframe,
+		bars: timeline.length,
+		tickers: tickers.map((t) => t.ticker),
+		lookaheadOptimistic: fillModel === 'close' || fillModel === 'signalPrice',
+		schemaVersion: spec.schemaVersion,
+		computedAt
+	};
+
 	return {
 		runId: newRunId(),
 		spec,
@@ -473,7 +517,8 @@ export function runBacktest(
 		distribution,
 		candles: usedCandles,
 		warnings,
-		computedAt: new Date().toISOString()
+		audit,
+		computedAt
 	};
 
 	// -----------------------------------------------------------------------
@@ -606,7 +651,9 @@ export function runBacktest(
 		const provisionalStop = computeStopPrice(spec, side, fillPrice, atrAtEntry);
 		// Size from marked-to-market equity at the fill bar (cash + open positions).
 		const equity = markEquity(Date.parse(td.candles[fill.barIndex].t));
-		const qty = sizePosition(spec, equity, fillPrice, provisionalStop);
+		const desiredQty = sizePosition(spec, equity, fillPrice, provisionalStop);
+		// §2.3 Liquidity cap: never fill more than the allowed share of bar volume.
+		const qty = applyLiquidityCap(desiredQty, td, fill.barIndex);
 		if (qty <= 0) return;
 
 		const cost = qty * fillPrice;
@@ -645,7 +692,9 @@ export function runBacktest(
 		const fillPrice = applySlippage(fill.price, side, true, spec);
 		if (!(fillPrice > 0)) return;
 		const equity = markEquity(Date.parse(td.candles[fill.barIndex].t));
-		const addQty = sizePosition(spec, equity, fillPrice, pos.stopPrice);
+		const desiredAddQty = sizePosition(spec, equity, fillPrice, pos.stopPrice);
+		// §2.3 Liquidity cap also constrains pyramided adds.
+		const addQty = applyLiquidityCap(desiredAddQty, td, fill.barIndex);
 		if (addQty <= 0) return;
 
 		const cost = addQty * fillPrice;

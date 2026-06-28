@@ -149,7 +149,8 @@ const riskSchema = z.object({
 
 const executionSchema = z.object({
 	fillOn: z.enum(['nextOpen', 'close', 'signalPrice']),
-	orderType: z.enum(['market', 'limit', 'stop'])
+	orderType: z.enum(['market', 'limit', 'stop']),
+	maxBarVolumePct: z.number().gt(0).max(100).optional()
 });
 
 export const strategySpecSchema: z.ZodType<StrategySpec> = z.object({

@@ -128,6 +128,31 @@ export interface BacktestResult {
 	/** Optional buy-and-hold benchmark overlay (when universe.benchmark is set). */
 	benchmark?: BenchmarkResult;
 	warnings: string[];
+	/** Snapshot of execution assumptions this result was produced under (§8/§10). */
+	audit: AuditRecord;
+	computedAt: string;
+}
+
+/**
+ * Per-result AUDIT RECORD (spec §8/§10) — a flat, self-describing snapshot of the
+ * execution assumptions a result was produced under. Lets a reviewer judge how
+ * trustworthy/realistic a result is without re-deriving it from the full spec.
+ */
+export interface AuditRecord {
+	fillModel: string;
+	orderType: string;
+	commissionMode: string;
+	slippageMode: string;
+	initialCapital: number;
+	/** Liquidity cap as % of bar volume, or null when uncapped. */
+	liquidityCapPct: number | null;
+	timeframe: string;
+	/** Timeline length used (number of bars walked). */
+	bars: number;
+	tickers: string[];
+	/** True when the fill model fills at the signal bar (close/signalPrice). */
+	lookaheadOptimistic: boolean;
+	schemaVersion: number;
 	computedAt: string;
 }
 

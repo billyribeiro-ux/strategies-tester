@@ -353,6 +353,16 @@ export class StrategyStore {
 		this.markDirty();
 	};
 
+	/**
+	 * Set the liquidity cap (max % of bar volume, §2.3). A non-positive or NaN
+	 * value clears the cap (undefined = uncapped).
+	 */
+	setExecutionLiquidityCap = (pct: number | undefined) => {
+		this.spec.execution.maxBarVolumePct =
+			typeof pct === 'number' && Number.isFinite(pct) && pct > 0 ? pct : undefined;
+		this.markDirty();
+	};
+
 	// --- serialization ------------------------------------------------------
 
 	snapshot = (): StrategySpec => $state.snapshot(this.spec);

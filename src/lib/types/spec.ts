@@ -229,6 +229,12 @@ export const ORDER_TYPES: readonly OrderType[] = ['market', 'limit', 'stop'] as 
 export interface Execution {
 	fillOn: FillModel;
 	orderType: OrderType;
+	/**
+	 * Liquidity cap (§2.3): max share of a bar's volume a single fill may take,
+	 * as a percentage in (0, 100]. Caps filled qty at `floor(bar.volume * pct/100)`.
+	 * `undefined` means no cap (fills are not constrained by bar volume).
+	 */
+	maxBarVolumePct?: number;
 }
 
 // ---------------------------------------------------------------------------
