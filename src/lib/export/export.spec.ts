@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { tradesToCsv, csvField } from './csv';
 import { buildFilename } from './filename';
 import { buildWorkbook } from './xlsx';
+import { resultToJson } from './json';
 import { computeTotals } from './ledger';
 import type { BacktestResult, StrategySpec, Trade } from '$lib/types';
 
@@ -172,6 +173,52 @@ describe('computeTotals', () => {
 		expect(t.totalTrades).toBe(0);
 		expect(Number.isNaN(t.winRate)).toBe(true);
 		expect(Number.isNaN(t.profitFactor)).toBe(true);
+	});
+});
+
+describe('resultToJson', () => {
+	const baseResult: BacktestResult = {
+		runId: 'run-1',
+		spec: makeSpec(),
+		metrics: [
+			{
+				id: 'totalReturn',
+				label: 'Total return',
+				value: 0.25,
+				format: 'pct',
+				group: 'returns',
+				betterWhenHigher: true
+			}
+		],
+		equityCurve: [{ t: '2024-01-02T14:30:00.000Z', equity: 100000 }],
+		drawdown: [{ t: '2024-01-02T14:30:00.000Z', drawdown: 0 }],
+		trades: [makeTrade(), makeTrade({ id: 't2', pnl: -25, side: 'short' })],
+		monthlyReturns: [{ year: 2024, month: 1, returnPct: 0.05 }],
+		distribution: [{ lower: -0.1, upper: 0, count: 1 }],
+		warnings: ['heads up'],
+		computedAt: '2024-12-31T00:00:00.000Z'
+	};
+
+	it('round-trips the full result losslessly with the visible trades', () => {
+		const visible = [makeTrade()];
+		const parsed = JSON.parse(resultToJson(baseResult, visible)) as BacktestResult;
+		expect(parsed.runId).toBe('run-1');
+		expect(parsed.metrics).toEqual(baseResult.metrics);
+		expect(parsed.equityCurve).toEqual(baseResult.equityCurve);
+		expect(parsed.warnings).toEqual(['heads up']);
+		// Trades reflect the passed-in (filtered/sorted) view, not the original.
+		expect(parsed.trades).toHaveLength(1);
+		expect(parsed.trades[0].id).toBe('t1');
+	});
+
+	it('does not mutate the original result', () => {
+		resultToJson(baseResult, []);
+		expect(baseResult.trades).toHaveLength(2);
+	});
+
+	it('pretty-prints with two-space indentation', () => {
+		const json = resultToJson(baseResult, []);
+		expect(json).toContain('\n  "runId": "run-1"');
 	});
 });
 
