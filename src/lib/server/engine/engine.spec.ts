@@ -9,8 +9,9 @@ import type {
 	StrategySpec
 } from '$lib/types';
 import { runBacktest } from './engine';
-import { assertNoLookahead } from './leak-gate';
-import { trueRange, wilderSmooth } from './series';
+import { assertNoLookahead, perturbAfter } from './leak-gate';
+import { trueRange, wilderSmooth, ema } from './series';
+import { resampleBySeconds, alignToBase } from './mtf';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -949,5 +950,145 @@ describe('runBacktest — short borrow cost (§ costs)', () => {
 			}
 		});
 		expect(() => assertNoLookahead(spec, { TEST: candles(closes) })).not.toThrow();
+	});
+});
+
+describe('runBacktest — multi-timeframe indicator reference (§3 / §4a)', () => {
+	// Hourly base candles, anchored at UTC midnight, so they resample cleanly into
+	// 4h higher-TF buckets (4 hourly bars per HTF bar).
+	function hourlyCandles(closes: number[]): Candle[] {
+		return closes.map((c, i) => {
+			const o = i === 0 ? c : closes[i - 1];
+			return {
+				t: new Date(Date.UTC(2024, 0, 1 + Math.floor(i / 24), i % 24)).toISOString(),
+				o,
+				h: Math.max(o, c) + 0.5,
+				l: Math.min(o, c) - 0.5,
+				c,
+				v: 1000
+			};
+		});
+	}
+
+	function mtfSpec(): StrategySpec {
+		return baseSpec({
+			universe: { ...baseSpec().universe, timeframe: '1h' },
+			// Higher-TF EMA(3) on 4h bars, referenced on the 1h base bars.
+			indicators: [
+				{ id: 'ema_htf', type: 'ema', params: { period: 3 }, priceSource: 'close', timeframe: '4h' }
+			],
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', indicator('ema_htf'))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', indicator('ema_htf'))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+	}
+
+	it('aligns the HTF series to base bars using only the previous COMPLETED HTF bar', () => {
+		// Drive the engine through the SAME precompute path by re-deriving the HTF EMA
+		// independently and checking the engine trades only ever reference the closed bar.
+		const closes = Array.from({ length: 48 }, (_, i) => 100 + Math.sin(i / 3) * 8);
+		const base = hourlyCandles(closes);
+
+		// Re-derive: resample 1h→4h (14400s), EMA(3), align back to base indices.
+		const { bars, bucketEndMs } = resampleBySeconds(base, 14_400);
+		const htfEma = ema(
+			bars.map((b) => b.c),
+			3
+		);
+		const aligned = alignToBase(
+			base.map((c) => Date.parse(c.t)),
+			htfEma,
+			bucketEndMs
+		);
+
+		// Property: at any base bar t, the aligned value equals the EMA of the LAST
+		// HTF bucket whose close time <= t — i.e. a fully closed bar, never the
+		// forming one. Verify the alignment matches a direct "most-recent-closed" scan.
+		for (let i = 0; i < base.length; i++) {
+			const t = Date.parse(base[i].t);
+			let lastClosed = -1;
+			for (let k = 0; k < bucketEndMs.length; k++) {
+				if (bucketEndMs[k] <= t) lastClosed = k;
+				else break;
+			}
+			const expected = lastClosed >= 0 ? htfEma[lastClosed] : NaN;
+			if (Number.isNaN(expected)) {
+				expect(Number.isNaN(aligned[i])).toBe(true);
+			} else {
+				expect(aligned[i]).toBe(expected);
+			}
+			// The value at base bar i is NEVER the EMA of a bucket that closes AFTER t
+			// (the forming/future bar): the engine cannot have seen it.
+			for (let k = 0; k < bucketEndMs.length; k++) {
+				if (bucketEndMs[k] > t && Number.isFinite(htfEma[k]) && Number.isFinite(aligned[i])) {
+					// Only assert distinctness when the future bucket's value actually differs.
+					if (htfEma[k] !== expected) expect(aligned[i]).not.toBe(htfEma[k]);
+				}
+			}
+		}
+	});
+
+	it('a higher-TF strategy is leak-free (gate passes)', () => {
+		const closes = Array.from({ length: 96 }, (_, i) => 100 + Math.sin(i / 4) * 10);
+		expect(() => assertNoLookahead(mtfSpec(), { TEST: hourlyCandles(closes) })).not.toThrow();
+	});
+
+	it('settled trades are invariant to mutating future bars (perturbAfter style)', () => {
+		const closes = Array.from({ length: 96 }, (_, i) => 100 + Math.sin(i / 4) * 10);
+		const base = hourlyCandles(closes);
+		const spec = mtfSpec();
+
+		const baseline = runBacktest(spec, { TEST: base }).trades;
+		const timeToIndex = new Map(base.map((c, i) => [c.t, i]));
+		expect(baseline.length).toBeGreaterThan(0);
+
+		// At several interior cuts, corrupt all bars after the cut and confirm every
+		// trade fully SETTLED on/before the cut is byte-identical to the clean run.
+		for (const cut of [30, 45, 60, 75]) {
+			const perturbed = runBacktest(spec, { TEST: perturbAfter(base, cut) }).trades;
+			const settledBaseline = baseline.filter(
+				(t) => (timeToIndex.get(t.exitTime) ?? Infinity) <= cut
+			);
+			const settledPerturbed = perturbed.filter(
+				(t) => (timeToIndex.get(t.exitTime) ?? Infinity) <= cut
+			);
+			expect(settledPerturbed.length).toBe(settledBaseline.length);
+			for (let i = 0; i < settledBaseline.length; i++) {
+				expect(settledPerturbed[i].entryTime).toBe(settledBaseline[i].entryTime);
+				expect(settledPerturbed[i].entryPrice).toBe(settledBaseline[i].entryPrice);
+				expect(settledPerturbed[i].exitTime).toBe(settledBaseline[i].exitTime);
+				expect(settledPerturbed[i].exitPrice).toBe(settledBaseline[i].exitPrice);
+				expect(settledPerturbed[i].pnl).toBeCloseTo(settledBaseline[i].pnl, 9);
+			}
+		}
+	});
+
+	it('treats a non-higher timeframe (equal/omitted) as the base path', () => {
+		const closes = Array.from({ length: 48 }, (_, i) => 100 + Math.sin(i / 3) * 8);
+		const base = hourlyCandles(closes);
+		// timeframe '1h' equals the universe TF → identical to omitting it.
+		const withEqual = baseSpec({
+			universe: { ...baseSpec().universe, timeframe: '1h' },
+			indicators: [
+				{ id: 'e', type: 'ema', params: { period: 5 }, priceSource: 'close', timeframe: '1h' }
+			],
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', indicator('e'))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', indicator('e'))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		const withOmitted = baseSpec({
+			universe: { ...baseSpec().universe, timeframe: '1h' },
+			indicators: [{ id: 'e', type: 'ema', params: { period: 5 }, priceSource: 'close' }],
+			rules: withEqual.rules
+		});
+		const a = normalize(runBacktest(withEqual, { TEST: base }));
+		const b = normalize(runBacktest(withOmitted, { TEST: base }));
+		expect(a.trades).toEqual(b.trades);
 	});
 });

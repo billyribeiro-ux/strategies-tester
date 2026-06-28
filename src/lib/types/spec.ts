@@ -75,6 +75,16 @@ export interface IndicatorInstance {
 	priceSource: PriceField;
 	/** Optional user-facing label override (defaults to a derived label). */
 	label?: string;
+	/**
+	 * Multi-timeframe reference (spec §3 / §4a). When set to a HIGHER timeframe than
+	 * the universe's, the indicator is computed on resampled higher-timeframe bars
+	 * and aligned back to base bars with NO look-ahead: a higher-TF bar's value is
+	 * available at a base bar only AFTER that higher-TF bar has CLOSED. Omitted (or
+	 * equal to the universe timeframe) = current behaviour (computed on base bars).
+	 * A timeframe LOWER than the universe's is rejected by validation (it would
+	 * fabricate sub-bar data).
+	 */
+	timeframe?: TimeframeId;
 }
 
 // ---------------------------------------------------------------------------

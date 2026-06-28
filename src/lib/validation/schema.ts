@@ -107,7 +107,11 @@ const indicatorInstanceSchema = z.object({
 	type: z.string().min(1),
 	params: z.record(z.string(), paramValue),
 	priceSource: priceField,
-	label: z.string().optional()
+	label: z.string().optional(),
+	// Optional multi-timeframe reference (spec §3). Structural check only: must be a
+	// non-empty timeframe id; the "non-lower than universe" rule is semantic and
+	// lives in validate-spec.ts.
+	timeframe: z.string().min(1).optional()
 });
 
 const sessionSchema = z.discriminatedUnion('kind', [

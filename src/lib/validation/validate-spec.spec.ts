@@ -106,6 +106,39 @@ describe('validateSpec', () => {
 		expect(issues.some((i) => i.path === 'risk.stopLoss' && i.severity === 'error')).toBe(true);
 	});
 
+	it('allows a HIGHER indicator timeframe than the universe (§3 MTF)', () => {
+		const spec = validSpec();
+		spec.universe.timeframe = '1h';
+		spec.indicators[0].timeframe = '4h'; // higher than 1h → allowed
+		expect(hasErrors(v(spec))).toBe(false);
+	});
+
+	it('allows an indicator timeframe equal to the universe', () => {
+		const spec = validSpec();
+		spec.universe.timeframe = '1h';
+		spec.indicators[0].timeframe = '1h';
+		expect(hasErrors(v(spec))).toBe(false);
+	});
+
+	it('errors on an indicator timeframe LOWER than the universe', () => {
+		const spec = validSpec();
+		spec.universe.timeframe = '1d';
+		spec.indicators[0].timeframe = '1h'; // lower than 1d → fabricated sub-bar data
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'indicators[0].timeframe' && i.severity === 'error')).toBe(
+			true
+		);
+	});
+
+	it('errors on an unknown indicator timeframe', () => {
+		const spec = validSpec();
+		spec.indicators[0].timeframe = 'bogus';
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'indicators[0].timeframe' && i.severity === 'error')).toBe(
+			true
+		);
+	});
+
 	it('requires a component for multi-output indicators', () => {
 		const spec = validSpec();
 		const macd = createIndicatorInstance(indicatorCapability('macd')!);

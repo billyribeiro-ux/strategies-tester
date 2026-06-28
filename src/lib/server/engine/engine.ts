@@ -29,6 +29,7 @@ import { assertNever } from '$lib/utils/assert-never';
 import { CAPABILITIES } from '$lib/capabilities/catalog';
 import { getComputeFn } from '../indicators/registry';
 import { ParamReader } from '../indicators/compute';
+import { alignToBase, resampleBySeconds } from './mtf';
 import { evaluateGroup, type EvalContext, type IndicatorSeriesMap } from './evaluate';
 import {
 	computeDistribution,
@@ -75,20 +76,55 @@ interface OpenPosition {
 // Precompute
 // ---------------------------------------------------------------------------
 
-/** Compute every referenced indicator instance for one ticker into series. */
+/** Seconds for a timeframe id, defaulting to daily when unknown. */
+function timeframeSecondsOf(timeframe: string): number {
+	return CAPABILITIES.timeframes.find((t) => t.id === timeframe)?.seconds ?? 86_400;
+}
+
+/**
+ * Normalize a compute result into a component map (`number[]` → `{ value }`).
+ */
+function toSeriesMap(result: number[] | Record<string, number[]>): IndicatorSeriesMap {
+	return Array.isArray(result) ? { value: result } : result;
+}
+
+/**
+ * Compute every referenced indicator instance for one ticker into series indexed
+ * by BASE bar. An indicator with no `timeframe` (or one not HIGHER than the
+ * universe TF) is computed directly on the base candles (unchanged path). An
+ * indicator referencing a HIGHER timeframe (spec §3) is computed on resampled
+ * higher-TF bars and aligned back to base indices with NO look-ahead: at base
+ * bar `t` it exposes only the most recently CLOSED higher-TF bar (see mtf.ts).
+ *
+ * `baseSeconds` is the universe timeframe's length in seconds, used to decide
+ * which path each indicator takes.
+ */
 function precomputeIndicators(
 	indicators: IndicatorInstance[],
-	candles: Candle[]
+	candles: Candle[],
+	baseSeconds: number
 ): Record<string, IndicatorSeriesMap> {
 	const out: Record<string, IndicatorSeriesMap> = {};
+	const baseTimesMs = candles.map((c) => Date.parse(c.t));
 	for (const inst of indicators) {
 		const fn = getComputeFn(inst.type);
 		if (!fn) continue; // validated upstream; skip unknown defensively
-		const result = fn(candles, new ParamReader(inst.params), inst.priceSource);
-		if (Array.isArray(result)) {
-			out[inst.id] = { value: result };
+
+		const tfSeconds = inst.timeframe ? timeframeSecondsOf(inst.timeframe) : baseSeconds;
+		// Higher-TF reference: resample up, compute on HTF bars, align back to base.
+		// Equal or lower TF (and the no-timeframe case) use the base path unchanged —
+		// a lower TF is never honoured (it would fabricate sub-bar data; validation
+		// rejects it, but the engine clamps to base for safety).
+		if (inst.timeframe && tfSeconds > baseSeconds) {
+			const { bars, bucketEndMs } = resampleBySeconds(candles, tfSeconds);
+			const htf = toSeriesMap(fn(bars, new ParamReader(inst.params), inst.priceSource));
+			const aligned: IndicatorSeriesMap = {};
+			for (const [component, series] of Object.entries(htf)) {
+				aligned[component] = alignToBase(baseTimesMs, series, bucketEndMs);
+			}
+			out[inst.id] = aligned;
 		} else {
-			out[inst.id] = result;
+			out[inst.id] = toSeriesMap(fn(candles, new ParamReader(inst.params), inst.priceSource));
 		}
 	}
 	return out;
@@ -383,7 +419,7 @@ export function runBacktest(
 		candles.forEach((c, i) => indexByTime.set(Date.parse(c.t), i));
 		const ctx: EvalContext = {
 			candles,
-			indicators: precomputeIndicators(spec.indicators, candles)
+			indicators: precomputeIndicators(spec.indicators, candles, timeframeSeconds)
 		};
 		tickers.push({ ticker, candles, ctx, indexByTime });
 		usedCandles[ticker] = candles;

@@ -192,6 +192,18 @@ export class StrategyStore {
 		this.markDirty();
 	};
 
+	/**
+	 * Multi-timeframe reference (spec §3). Setting a HIGHER timeframe than the
+	 * universe computes the indicator on resampled higher-TF bars, aligned to base
+	 * bars without look-ahead. An empty value clears it (= compute on base bars).
+	 */
+	setIndicatorTimeframe = (id: string, timeframe: TimeframeId | undefined) => {
+		const ind = this.spec.indicators.find((i) => i.id === id);
+		if (!ind) return;
+		ind.timeframe = timeframe && timeframe.trim() ? timeframe : undefined;
+		this.markDirty();
+	};
+
 	// --- rules: recursive tree helpers --------------------------------------
 
 	/** Depth-first search for a group by id within a section's root group. */

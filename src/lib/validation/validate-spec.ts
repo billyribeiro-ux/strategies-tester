@@ -39,6 +39,10 @@ interface Ctx {
 	capByType: Map<string, IndicatorCapability>;
 	offeredOperators: Set<string>;
 	timeframeIds: Set<string>;
+	/** Timeframe id → its length in seconds (for ordering MTF references). */
+	timeframeSeconds: Map<string, number>;
+	/** The universe timeframe id, against which MTF references are ordered. */
+	universeTimeframe: string;
 }
 
 function add(ctx: Ctx, severity: Severity, path: string, message: string, nodeId?: string) {
@@ -53,7 +57,9 @@ export function validateSpec(spec: StrategySpec, capabilities: Capabilities): Sp
 		indById: new Map(spec.indicators.map((i) => [i.id, i])),
 		capByType: new Map(capabilities.indicators.map((c) => [c.type, c])),
 		offeredOperators: new Set(capabilities.operators.map((o) => o.id)),
-		timeframeIds: new Set(capabilities.timeframes.map((t) => t.id))
+		timeframeIds: new Set(capabilities.timeframes.map((t) => t.id)),
+		timeframeSeconds: new Map(capabilities.timeframes.map((t) => [t.id, t.seconds])),
+		universeTimeframe: spec.universe.timeframe
 	};
 
 	if (!spec.name.trim()) add(ctx, 'warning', 'name', 'Give your strategy a name.');
@@ -152,7 +158,33 @@ function validateIndicators(spec: StrategySpec, ctx: Ctx) {
 				`"${ind.priceSource}" is not a typical source for ${cap.label}.`
 			);
 		}
+		// Multi-timeframe reference (spec §3): an indicator may be computed on a
+		// HIGHER timeframe than the universe and aligned back to base bars without
+		// look-ahead. The TF must be known and not LOWER than the universe TF (a
+		// lower TF would fabricate sub-bar data). Equal is allowed (= base bars).
+		validateIndicatorTimeframe(ind, base, ctx);
 	});
+}
+
+function validateIndicatorTimeframe(ind: IndicatorInstance, base: string, ctx: Ctx) {
+	if (ind.timeframe === undefined) return;
+	const path = `${base}.timeframe`;
+	const tfSeconds = ctx.timeframeSeconds.get(ind.timeframe);
+	if (tfSeconds === undefined) {
+		add(ctx, 'error', path, `Unknown timeframe "${ind.timeframe}".`);
+		return;
+	}
+	const baseSeconds = ctx.timeframeSeconds.get(ctx.universeTimeframe);
+	if (baseSeconds === undefined) return; // unknown universe TF already flagged upstream
+	if (tfSeconds < baseSeconds) {
+		add(
+			ctx,
+			'error',
+			path,
+			`Indicator timeframe "${ind.timeframe}" is lower than the universe timeframe ` +
+				`"${ctx.universeTimeframe}". Use a timeframe equal to or higher than the chart.`
+		);
+	}
 }
 
 function validateRules(spec: StrategySpec, ctx: Ctx) {
