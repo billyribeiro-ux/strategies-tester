@@ -314,6 +314,16 @@ export function runBacktest(
 	let tradeSeq = 0;
 
 	const fillModel = spec.execution.fillOn;
+	// G1 / §2.2: 'close' and 'signalPrice' fill at the SIGNAL bar — the engine
+	// cannot have known that price when the signal formed. These are research-only
+	// and lookahead-optimistic; surface it loudly so results aren't mistaken for
+	// realistic. 'nextOpen' (the default) is the only execution-realistic model.
+	if (fillModel === 'close' || fillModel === 'signalPrice') {
+		warnings.push(
+			`Fill model "${fillModel}" fills at the signal bar and is lookahead-optimistic ` +
+				`(violates next-bar-open execution). Treat results as research-only; use "nextOpen" for realistic fills.`
+		);
+	}
 	const maxPositions = spec.risk.maxConcurrentPositions;
 	const pyramiding = spec.risk.pyramiding;
 

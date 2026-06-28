@@ -277,6 +277,31 @@ describe('runBacktest — warnings & no data', () => {
 	});
 });
 
+describe('runBacktest — lookahead-optimistic fill models (G1 / §2.2)', () => {
+	it('warns when filling at the signal bar (close / signalPrice)', () => {
+		const rules = {
+			longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+			longExit: emptyGroup(),
+			shortEntry: emptyGroup(),
+			shortExit: emptyGroup()
+		};
+		const data = { TEST: candles([100, 104, 106, 108, 110]) };
+
+		const closeFill = runBacktest(
+			baseSpec({ rules, execution: { fillOn: 'close', orderType: 'market' } }),
+			data
+		);
+		expect(closeFill.warnings.some((w) => /lookahead-optimistic/i.test(w))).toBe(true);
+
+		// The realistic default must NOT warn.
+		const nextOpen = runBacktest(
+			baseSpec({ rules, execution: { fillOn: 'nextOpen', orderType: 'market' } }),
+			data
+		);
+		expect(nextOpen.warnings.some((w) => /lookahead-optimistic/i.test(w))).toBe(false);
+	});
+});
+
 describe('runBacktest — short side', () => {
 	it('profits when price falls after a short entry', () => {
 		const spec = baseSpec({
