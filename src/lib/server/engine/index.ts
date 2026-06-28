@@ -4,3 +4,5 @@ export * from './evaluate';
 export * from './metrics';
 export * from './engine';
 export * from './leak-gate';
+export * from './analytics';
+export * from './search';

@@ -12,6 +12,13 @@ export { downloadBlob } from './download';
 export { tradesToCsv, csvField } from './csv';
 export { buildWorkbook, exportXlsx } from './xlsx';
 export { resultToJson, exportResultJson } from './json';
+export {
+	escapeHtml,
+	metricsTableHtml,
+	equitySvg,
+	buildTearsheetHtml,
+	exportTearsheet
+} from './tearsheet';
 export { computeTotals, LEDGER_COLUMNS } from './ledger';
 export type { LedgerColumn, LedgerTotals, ColumnType } from './ledger';
 

@@ -4,3 +4,4 @@ export * from './capabilities';
 export * from './result';
 export * from './optimize';
 export * from './walkforward';
+export * from './validation';
