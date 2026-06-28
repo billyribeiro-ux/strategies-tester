@@ -3,3 +3,4 @@ export * from './series';
 export * from './evaluate';
 export * from './metrics';
 export * from './engine';
+export * from './leak-gate';
