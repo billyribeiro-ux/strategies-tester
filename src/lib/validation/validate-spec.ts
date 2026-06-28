@@ -207,7 +207,9 @@ function validateGroup(group: ConditionGroup, path: string, section: RuleSection
 }
 
 function validateLeaf(leaf: ConditionLeaf, path: string, ctx: Ctx) {
-	if (!ctx.offeredOperators.has(leaf.op)) {
+	// `sequence` composes child leaves and has no operator of its own; the rest
+	// carry an `op` that must be offered by the backend.
+	if (leaf.kind !== 'sequence' && !ctx.offeredOperators.has(leaf.op)) {
 		add(ctx, 'warning', path, `Operator "${leaf.op}" is not offered by the backend.`, leaf.id);
 	}
 	switch (leaf.kind) {
@@ -246,10 +248,47 @@ function validateLeaf(leaf: ConditionLeaf, path: string, ctx: Ctx) {
 				}
 			}
 			break;
+		case 'persistence':
+			validateOperand(leaf.operand, `${path}.operand`, leaf.id, ctx);
+			validateOperand(leaf.threshold, `${path}.threshold`, leaf.id, ctx);
+			if (!isPositiveInt(leaf.bars)) {
+				add(ctx, 'error', `${path}.bars`, 'Persistence must span at least 1 bar.', leaf.id);
+			}
+			break;
+		case 'sequence':
+			if (!isPositiveInt(leaf.withinBars)) {
+				add(ctx, 'error', `${path}.withinBars`, 'Within-bars must be at least 1 bar.', leaf.id);
+			}
+			validateLeaf(leaf.first, `${path}.first`, ctx);
+			validateLeaf(leaf.second, `${path}.second`, ctx);
+			break;
 	}
 }
 
+function isPositiveInt(n: number): boolean {
+	return Number.isInteger(n) && n >= 1;
+}
+
 function validateOperand(operand: Operand, path: string, nodeId: string, ctx: Ctx) {
+	if (operand.kind === 'aggregate') {
+		if (!isPositiveInt(operand.window)) {
+			add(ctx, 'error', `${path}.window`, 'Aggregate window must be at least 1 bar.', nodeId);
+		}
+		if (!Number.isInteger(operand.offset) || operand.offset < 0) {
+			add(ctx, 'error', `${path}.offset`, 'Offset must be a whole number ≥ 0.', nodeId);
+		}
+		if (operand.source.kind === 'constant') {
+			add(
+				ctx,
+				'warning',
+				`${path}.source`,
+				'Aggregating a constant yields that constant — pick a series.',
+				nodeId
+			);
+		}
+		validateOperand(operand.source, `${path}.source`, nodeId, ctx);
+		return;
+	}
 	if (operand.kind === 'indicator') {
 		if (!operand.ref) {
 			add(ctx, 'error', path, 'Choose an indicator.', nodeId);

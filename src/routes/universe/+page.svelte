@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { PageData } from './$types';
 	import {
 		Button,
@@ -36,8 +37,9 @@
 	let provider = $state<Provider>('explicit');
 	let symbolsText = $state('AAPL, MSFT, GOOGL, AMZN');
 	let index = $state('sp500');
-	let from = $state(data.defaults.from);
-	let to = $state(data.defaults.to);
+	// Seeded once from load data; mutated locally by the form inputs.
+	let from = $state(untrack(() => data.defaults.from));
+	let to = $state(untrack(() => data.defaults.to));
 
 	let loading = $state(false);
 	let errorMessage = $state<string | null>(null);

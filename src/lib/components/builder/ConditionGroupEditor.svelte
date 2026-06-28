@@ -79,6 +79,24 @@
 				{#snippet icon()}<Plus size={14} weight="bold" />{/snippet}
 				Condition
 			</Button>
+			<Button
+				size="sm"
+				variant="ghost"
+				onclick={() => store.addLeaf(section, group.id, 'persistence')}
+				title="A comparison that must hold for N consecutive bars"
+			>
+				{#snippet icon()}<Plus size={14} weight="bold" />{/snippet}
+				Streak
+			</Button>
+			<Button
+				size="sm"
+				variant="ghost"
+				onclick={() => store.addLeaf(section, group.id, 'sequence')}
+				title="One condition, then another within N bars"
+			>
+				{#snippet icon()}<Plus size={14} weight="bold" />{/snippet}
+				Sequence
+			</Button>
 			<Button size="sm" variant="ghost" onclick={() => store.addGroup(section, group.id)}>
 				{#snippet icon()}<Stack size={14} />{/snippet}
 				Group

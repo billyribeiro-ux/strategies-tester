@@ -9,6 +9,7 @@ import type {
 	StrategySpec
 } from '$lib/types';
 import { runBacktest } from './engine';
+import { assertNoLookahead } from './leak-gate';
 import { trueRange, wilderSmooth } from './series';
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,19 @@ function candles(closes: number[]): Candle[] {
 			v: 1000
 		};
 	});
+}
+
+/** Build candles from explicit [o, h, l, c] tuples (volume 1000), for precise
+ *  control of intrabar range in limit/stop entry tests. */
+function ohlc(bars: [number, number, number, number][]): Candle[] {
+	return bars.map(([o, h, l, c], i) => ({
+		t: new Date(Date.UTC(2024, 0, 1 + i)).toISOString(),
+		o,
+		h,
+		l,
+		c,
+		v: 1000
+	}));
 }
 
 function group(logic: 'AND' | 'OR', children: (ConditionLeaf | ConditionGroup)[]): ConditionGroup {
@@ -573,6 +587,168 @@ describe('runBacktest — drawdown circuit-breaker (§5)', () => {
 		const result = runBacktest(spec, data);
 		expect(result.trades.length).toBeGreaterThanOrEqual(2);
 		expect(result.warnings.some((w) => /circuit-breaker/i.test(w))).toBe(false);
+	});
+});
+
+describe('runBacktest — limit & stop entry orders (§5)', () => {
+	// A long crossover over 105 fires at idx 2 (close 104 → 106): the order's
+	// reference price is the SIGNAL bar's close (106). The order is good for the
+	// NEXT bar only (idx 3) and expires if that bar doesn't reach it.
+	const longCrossRules = {
+		longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+		longExit: emptyGroup(),
+		shortEntry: emptyGroup(),
+		shortExit: emptyGroup()
+	};
+	// closes: 100, 104, 106(cross), <fill bar idx3>, ...
+	// idx0/idx1 produce the crossover; idx3 [o,h,l,c] decides the fill; idx4 is
+	// quiet so no further entries (and the position closes at endOfData).
+	function longSeries(fillBar: [number, number, number, number]): Candle[] {
+		return ohlc([
+			[100, 100.5, 99.5, 100],
+			[100, 104.5, 99.5, 104],
+			[104, 106.5, 103.5, 106],
+			fillBar,
+			[fillBar[3], fillBar[3] + 0.5, fillBar[3] - 0.5, fillBar[3]]
+		]);
+	}
+
+	it('limit (long): fills at the limit on a dip', () => {
+		// ref = 106. Next bar dips to low 104 (≤ 106) but opens at 108 (> limit):
+		// fills at the limit, price = min(open 108, limit 106) = 106.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'limit' }
+		});
+		const data = { TEST: longSeries([108, 109, 104, 107]) };
+		const result = runBacktest(spec, data);
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].side).toBe('long');
+		expect(result.trades[0].entryPrice).toBe(106);
+		expect(result.trades[0].entryTime).toBe(data.TEST[3].t);
+	});
+
+	it('limit (long): fills at the better open when the bar gaps below the limit', () => {
+		// ref = 106. Next bar gaps down: open 105 (< limit), low 103.
+		// fills at min(open 105, limit 106) = 105 (the better price).
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'limit' }
+		});
+		const result = runBacktest(spec, { TEST: longSeries([105, 106, 103, 104]) });
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].entryPrice).toBe(105);
+	});
+
+	it('limit (long): expires (no trade) when the next bar never dips to the limit', () => {
+		// ref = 106. Next bar low 108 (> limit) → order expires unfilled.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'limit' }
+		});
+		const result = runBacktest(spec, { TEST: longSeries([110, 112, 108, 111]) });
+		expect(result.trades.length).toBe(0);
+	});
+
+	it('stop (long): fills on a breakout at the stop level', () => {
+		// ref = 106. Next bar opens 105 (< stop) and breaks up to high 108 (≥ stop):
+		// fills at max(open 105, stop 106) = 106.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'stop' }
+		});
+		const data = { TEST: longSeries([105, 108, 104, 107]) };
+		const result = runBacktest(spec, data);
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].entryPrice).toBe(106);
+		expect(result.trades[0].entryTime).toBe(data.TEST[3].t);
+	});
+
+	it('stop (long): a gap-through fills at the (worse) open', () => {
+		// ref = 106. Next bar gaps up through the stop: open 109 (> stop), high 110.
+		// fills at max(open 109, stop 106) = 109 (the open).
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'stop' }
+		});
+		const result = runBacktest(spec, { TEST: longSeries([109, 110, 108, 109]) });
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].entryPrice).toBe(109);
+	});
+
+	it('stop (long): expires (no trade) when the next bar never reaches the stop', () => {
+		// ref = 106. Next bar high 105.5 (< stop) → order expires unfilled.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'stop' }
+		});
+		const result = runBacktest(spec, { TEST: longSeries([104, 105.5, 103, 104.5]) });
+		expect(result.trades.length).toBe(0);
+	});
+
+	it('short limit: fills only when the next bar trades up to the limit', () => {
+		// Short crossunder below 105 fires at idx 2 (close 106 → 104), ref = 104.
+		// Next bar must reach high ≥ 104 to fill; price = max(open, limit).
+		const rules = {
+			longEntry: emptyGroup(),
+			longExit: emptyGroup(),
+			shortEntry: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+			shortExit: emptyGroup()
+		};
+		const spec = baseSpec({
+			rules,
+			execution: { fillOn: 'nextOpen', orderType: 'limit' }
+		});
+		// idx2 close 104 = signal; idx3 opens 102 (< limit) but rises to high 106 (≥ limit):
+		// fills at max(open 102, limit 104) = 104.
+		const fills = ohlc([
+			[110, 110.5, 109.5, 110],
+			[110, 110.5, 105.5, 106],
+			[106, 106.5, 103.5, 104],
+			[102, 106, 101, 105],
+			[105, 105.5, 104.5, 105]
+		]);
+		const result = runBacktest(spec, { TEST: fills });
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].side).toBe('short');
+		expect(result.trades[0].entryPrice).toBe(104);
+	});
+
+	it('limit & stop entries are leak-free (gate passes over a zigzag series)', () => {
+		// Run the engine-agnostic leak gate against both new order types on a series
+		// that crosses 105 repeatedly, so many limit/stop orders fill and settle.
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const data = { TEST: candles(closes) };
+		const rules = {
+			longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+			longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+			shortEntry: emptyGroup(),
+			shortExit: emptyGroup()
+		};
+		expect(() =>
+			assertNoLookahead(
+				baseSpec({ rules, execution: { fillOn: 'nextOpen', orderType: 'limit' } }),
+				data
+			)
+		).not.toThrow();
+		expect(() =>
+			assertNoLookahead(
+				baseSpec({ rules, execution: { fillOn: 'nextOpen', orderType: 'stop' } }),
+				data
+			)
+		).not.toThrow();
+	});
+
+	it('market (default) is unchanged: fills at the next bar open', () => {
+		// Same signal series; a market order fills at the next bar's OPEN regardless
+		// of where the bar trades.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'market' }
+		});
+		const result = runBacktest(spec, { TEST: longSeries([108, 109, 104, 107]) });
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].entryPrice).toBe(108); // open of fill bar, not the limit
 	});
 });
 

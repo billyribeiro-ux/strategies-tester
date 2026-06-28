@@ -1,11 +1,12 @@
 <script lang="ts">
-	import type { Operand, OperandKind, PriceField } from '$lib/types';
-	import { PRICE_FIELDS } from '$lib/types';
-	import { indicatorLabel } from '$lib/spec/defaults';
+	import type { AggregateFn, Operand, OperandKind, PriceField } from '$lib/types';
+	import { AGGREGATE_FNS, PRICE_FIELDS } from '$lib/types';
+	import { defaultOperand, indicatorLabel } from '$lib/spec/defaults';
 	import { isConstantOperand, isIndicatorOperand, isPriceOperand } from '$lib/validation/guards';
 	import { assertNever } from '$lib/utils/assert-never';
 	import type { StrategyStore } from '$lib/stores/strategy.svelte';
 	import { NumberInput, SegmentedControl, Select } from '$lib/components/ui';
+	import Self from './OperandEditor.svelte';
 
 	interface Props {
 		store: StrategyStore;
@@ -15,22 +16,27 @@
 		onchange: (operand: Operand) => void;
 		/** Allow the "constant value" kind (false for rising/falling primary). */
 		allowConstant?: boolean;
+		/** Allow the "aggregate" kind (false inside an aggregate, to bound nesting). */
+		allowAggregate?: boolean;
 	}
 
-	let { store, operand, label, onchange, allowConstant = true }: Props = $props();
+	let {
+		store,
+		operand,
+		label,
+		onchange,
+		allowConstant = true,
+		allowAggregate = true
+	}: Props = $props();
 
-	const kindOptions = $derived(
-		allowConstant
-			? [
-					{ value: 'indicator', label: 'Indicator' },
-					{ value: 'price', label: 'Price' },
-					{ value: 'constant', label: 'Value' }
-				]
-			: [
-					{ value: 'indicator', label: 'Indicator' },
-					{ value: 'price', label: 'Price' }
-				]
-	);
+	const kindOptions = $derived([
+		{ value: 'indicator', label: 'Indicator' },
+		{ value: 'price', label: 'Price' },
+		...(allowConstant ? [{ value: 'constant', label: 'Value' }] : []),
+		...(allowAggregate ? [{ value: 'aggregate', label: 'Aggregate' }] : [])
+	]);
+
+	const aggregateFnOptions = AGGREGATE_FNS.map((f) => ({ value: f, label: f }));
 
 	const indicatorOptions = $derived(
 		store.spec.indicators.map((ind) => ({
@@ -69,9 +75,32 @@
 			case 'constant':
 				onchange({ kind: 'constant', value: 0 });
 				break;
+			case 'aggregate':
+				onchange(defaultOperand('aggregate'));
+				break;
 			default:
 				assertNever(next);
 		}
+	}
+
+	function emitAggregateFn(next: AggregateFn) {
+		if (operand.kind !== 'aggregate') return;
+		onchange({ ...operand, fn: next });
+	}
+
+	function emitAggregateSource(next: Operand) {
+		if (operand.kind !== 'aggregate') return;
+		onchange({ ...operand, source: next });
+	}
+
+	function emitAggregateWindow(next: number) {
+		if (operand.kind !== 'aggregate') return;
+		onchange({ ...operand, window: Math.max(1, Math.round(next)) });
+	}
+
+	function emitAggregateOffset(next: number) {
+		if (operand.kind !== 'aggregate') return;
+		onchange({ ...operand, offset: Math.max(0, Math.round(next)) });
 	}
 
 	function emitRef(nextRef: string) {
@@ -169,6 +198,51 @@
 				step={0.0001}
 				label="{label}: value"
 			/>
+		{:else if operand.kind === 'aggregate'}
+			<div class="aggregate">
+				<div class="agg-head">
+					<div class="agg-fn">
+						<Select
+							bind:value={() => operand.fn, (v) => emitAggregateFn(v as AggregateFn)}
+							options={aggregateFnOptions}
+							label="{label}: aggregate function"
+						/>
+					</div>
+					<div class="agg-num">
+						<NumberInput
+							bind:value={() => operand.window, (v) => emitAggregateWindow(v)}
+							min={1}
+							step={1}
+							suffix="bars"
+							label="{label}: window"
+						/>
+					</div>
+					<div class="agg-num">
+						<NumberInput
+							bind:value={() => operand.offset, (v) => emitAggregateOffset(v)}
+							min={0}
+							step={1}
+							suffix="bars ago"
+							label="{label}: offset"
+						/>
+					</div>
+				</div>
+				<div class="agg-source">
+					<span class="agg-of" aria-hidden="true">of</span>
+					<div class="grow">
+						<!-- Nested: the series being aggregated. Aggregate-of-aggregate is
+							 disallowed to keep the construct readable and bound depth. -->
+						<Self
+							{store}
+							operand={operand.source}
+							label="{label}: source"
+							allowConstant={false}
+							allowAggregate={false}
+							onchange={emitAggregateSource}
+						/>
+					</div>
+				</div>
+			</div>
 		{/if}
 	</div>
 </div>
@@ -206,5 +280,39 @@
 		font-size: var(--fs-xs);
 		color: var(--c-text-faint);
 		padding: var(--sp-1) 0;
+	}
+	.aggregate {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+		padding: var(--sp-2);
+		border: 1px dashed var(--c-border);
+		border-radius: var(--radius);
+	}
+	.agg-head {
+		display: flex;
+		gap: var(--sp-2);
+		align-items: flex-start;
+		flex-wrap: wrap;
+	}
+	.agg-fn {
+		flex: 1 1 8rem;
+		min-width: 7rem;
+	}
+	.agg-num {
+		flex: 0 1 8rem;
+		min-width: 6.5rem;
+	}
+	.agg-source {
+		display: flex;
+		gap: var(--sp-2);
+		align-items: flex-start;
+	}
+	.agg-of {
+		font-size: var(--fs-xs);
+		color: var(--c-text-faint);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		padding-top: var(--sp-2);
 	}
 </style>

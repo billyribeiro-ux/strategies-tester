@@ -81,10 +81,28 @@ export interface IndicatorInstance {
 // Operands (discriminated union). `offset` = N bars ago (0 = current bar).
 // ---------------------------------------------------------------------------
 
+/**
+ * Reductions an `aggregate` operand can apply over its trailing window.
+ * - `highest` / `lowest`: extreme of the window
+ * - `mean`: arithmetic average
+ * - `sum`: total
+ */
+export type AggregateFn = 'highest' | 'lowest' | 'mean' | 'sum';
+
+export const AGGREGATE_FNS: readonly AggregateFn[] = ['highest', 'lowest', 'mean', 'sum'] as const;
+
 export type Operand =
 	| { kind: 'indicator'; ref: string; component?: string; offset: number }
 	| { kind: 'price'; field: PriceField; offset: number }
-	| { kind: 'constant'; value: number };
+	| { kind: 'constant'; value: number }
+	/**
+	 * Reduction of `source` over the trailing window of `window` bars ending
+	 * `offset` bars ago: it reads bars `[i-offset-window+1 .. i-offset]`. If any
+	 * index is < 0 or `source` resolves to `NaN` at any of them, the aggregate is
+	 * `NaN` (→ its leaf is false). `window` ≥ 1, `offset` ≥ 0. Enables e.g.
+	 * "close > highest high of the last 20 bars".
+	 */
+	| { kind: 'aggregate'; fn: AggregateFn; source: Operand; window: number; offset: number };
 
 export type OperandKind = Operand['kind'];
 
@@ -117,6 +135,16 @@ export const RANGE_OPERATORS: readonly RangeOperator[] = ['insideRange', 'outsid
 // Conditions & groups — fully nestable, unlimited depth/breadth
 // ---------------------------------------------------------------------------
 
+/** Comparison operators usable by a `persistence` leaf (ordered, non-cross). */
+export type PersistenceOperator = 'gt' | 'gte' | 'lt' | 'lte';
+
+export const PERSISTENCE_OPERATORS: readonly PersistenceOperator[] = [
+	'gt',
+	'gte',
+	'lt',
+	'lte'
+] as const;
+
 export type ConditionLeaf =
 	| { kind: 'binary'; id: string; left: Operand; op: BinaryOperator; right: Operand }
 	| { kind: 'unary'; id: string; operand: Operand; op: UnaryOperator; lookback: number }
@@ -127,6 +155,32 @@ export type ConditionLeaf =
 			op: RangeOperator;
 			lower: Operand;
 			upper: Operand;
+	  }
+	/**
+	 * True iff `(operand op threshold)` holds at EACH of the last `bars` closed
+	 * bars (`i`, `i-1`, …, `i-bars+1`). Any NaN operand/threshold or an
+	 * out-of-range index (e.g. `i-bars+1 < 0`) makes the whole leaf false.
+	 * `bars` ≥ 1. Enables e.g. "RSI > 70 for 3 consecutive bars".
+	 */
+	| {
+			kind: 'persistence';
+			id: string;
+			operand: Operand;
+			op: PersistenceOperator;
+			threshold: Operand;
+			bars: number;
+	  }
+	/**
+	 * True iff `second` is true at bar `i` AND `first` was true at some bar `t` in
+	 * `[i-withinBars, i-1]` (scanning strictly backwards — point-in-time only,
+	 * never the future). `withinBars` ≥ 1. Enables ordered multi-bar setups.
+	 */
+	| {
+			kind: 'sequence';
+			id: string;
+			first: ConditionLeaf;
+			second: ConditionLeaf;
+			withinBars: number;
 	  };
 
 export type LeafKind = ConditionLeaf['kind'];

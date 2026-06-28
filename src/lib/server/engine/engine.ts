@@ -342,6 +342,7 @@ export function runBacktest(
 	let tradeSeq = 0;
 
 	const fillModel = spec.execution.fillOn;
+	const orderType = spec.execution.orderType;
 	// G1 / §2.2: 'close' and 'signalPrice' fill at the SIGNAL bar — the engine
 	// cannot have known that price when the signal formed. These are research-only
 	// and lookahead-optimistic; surface it loudly so results aren't mistaken for
@@ -721,6 +722,66 @@ export function runBacktest(
 		}
 	}
 
+	/**
+	 * Resolve the ENTRY fill for a signal at bar `idx` on ticker `td`, honoring the
+	 * configured order type (§5). Returns the fill price/time/index, or null when
+	 * the order does NOT fill (no next bar, or a limit/stop order that the next bar
+	 * never reaches — it expires; no resting orders persist across multiple bars).
+	 *
+	 * Leak-free: the order's reference price is the SIGNAL bar's close (known at
+	 * decision time, index ≤ idx) and the fill is decided using ONLY the next bar's
+	 * OHLC (the bar being filled on). No bar after the fill bar is ever consulted.
+	 *
+	 * - 'market': unchanged — delegates to `resolveFill` (next-bar open by default).
+	 * - 'limit' (better price): LONG fills only if next.low ≤ ref, at min(next.open, ref);
+	 *   SHORT fills only if next.high ≥ ref, at max(next.open, ref). A gap through the
+	 *   limit fills at the (better) open.
+	 * - 'stop' (worse price / breakout): LONG fills only if next.high ≥ ref, at
+	 *   max(next.open, ref); SHORT fills only if next.low ≤ ref, at min(next.open, ref).
+	 *   A gap through the stop fills at the open.
+	 */
+	function resolveEntryFill(
+		td: TickerData,
+		idx: number,
+		side: TradeSide
+	): { price: number; time: string; barIndex: number } | null {
+		if (orderType === 'market') return resolveFill(td, idx);
+
+		// limit/stop are inherently next-bar mechanics: reference = signal close at
+		// `idx`, decision against the immediately following bar.
+		const next = idx + 1;
+		if (next >= td.candles.length) return null; // no bar to fill on → expire
+		const ref = td.candles[idx].c;
+		const bar = td.candles[next];
+
+		let price: number;
+		switch (orderType) {
+			case 'limit': {
+				if (side === 'long') {
+					if (bar.l > ref) return null; // never dipped to the limit → expire
+					price = Math.min(bar.o, ref); // gap-down fills at the better open
+				} else {
+					if (bar.h < ref) return null; // never rose to the limit → expire
+					price = Math.max(bar.o, ref);
+				}
+				break;
+			}
+			case 'stop': {
+				if (side === 'long') {
+					if (bar.h < ref) return null; // never broke out up → expire
+					price = Math.max(bar.o, ref); // gap-up fills at the open
+				} else {
+					if (bar.l > ref) return null; // never broke down → expire
+					price = Math.min(bar.o, ref);
+				}
+				break;
+			}
+			default:
+				return assertNever(orderType, 'Unknown order type');
+		}
+		return { price, time: bar.t, barIndex: next };
+	}
+
 	/** Open risk of a position = qty × |entry − stop|; 0 when it has no stop. */
 	function positionRisk(qty: number, entryPrice: number, stopPrice: number | null): number {
 		if (stopPrice === null) return 0;
@@ -770,8 +831,8 @@ export function runBacktest(
 	}
 
 	function openPosition(td: TickerData, idx: number, side: TradeSide) {
-		const fill = resolveFill(td, idx);
-		if (!fill) return; // no next bar to fill on
+		const fill = resolveEntryFill(td, idx, side);
+		if (!fill) return; // no fill: no next bar, or limit/stop order expired unreached
 		const rawPrice = fill.price;
 		const fillPrice = applySlippage(rawPrice, side, true, spec);
 		if (!(fillPrice > 0)) return;
@@ -820,8 +881,8 @@ export function runBacktest(
 	}
 
 	function addToPosition(pos: OpenPosition, td: TickerData, idx: number, side: TradeSide) {
-		const fill = resolveFill(td, idx);
-		if (!fill) return;
+		const fill = resolveEntryFill(td, idx, side);
+		if (!fill) return; // no fill: no next bar, or limit/stop order expired unreached
 		const fillPrice = applySlippage(fill.price, side, true, spec);
 		if (!(fillPrice > 0)) return;
 		const equity = markEquity(Date.parse(td.candles[fill.barIndex].t));

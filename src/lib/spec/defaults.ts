@@ -16,6 +16,7 @@ import type {
 	OperandKind,
 	ParamSchema,
 	ParamValue,
+	PersistenceOperator,
 	RangeOperator,
 	Risk,
 	StrategySpec,
@@ -59,6 +60,14 @@ export function defaultOperand(kind: OperandKind, ref?: string, component?: stri
 			return { kind: 'price', field: 'close', offset: 0 };
 		case 'constant':
 			return { kind: 'constant', value: 0 };
+		case 'aggregate':
+			return {
+				kind: 'aggregate',
+				fn: 'highest',
+				source: defaultOperand('price'),
+				window: 20,
+				offset: 0
+			};
 	}
 }
 
@@ -87,6 +96,23 @@ export function createRangeLeaf(
 	return { kind: 'range', id: newNodeId(), operand, op, lower, upper };
 }
 
+export function createPersistenceLeaf(
+	operand: Operand = defaultOperand('price'),
+	op: PersistenceOperator = 'gt',
+	threshold: Operand = defaultOperand('constant'),
+	bars = 3
+): ConditionLeaf {
+	return { kind: 'persistence', id: newNodeId(), operand, op, threshold, bars };
+}
+
+export function createSequenceLeaf(
+	first: ConditionLeaf = createBinaryLeaf(),
+	second: ConditionLeaf = createBinaryLeaf(),
+	withinBars = 5
+): ConditionLeaf {
+	return { kind: 'sequence', id: newNodeId(), first, second, withinBars };
+}
+
 export function createLeaf(kind: LeafKind): ConditionLeaf {
 	switch (kind) {
 		case 'binary':
@@ -95,6 +121,10 @@ export function createLeaf(kind: LeafKind): ConditionLeaf {
 			return createUnaryLeaf();
 		case 'range':
 			return createRangeLeaf();
+		case 'persistence':
+			return createPersistenceLeaf();
+		case 'sequence':
+			return createSequenceLeaf();
 	}
 }
 

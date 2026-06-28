@@ -8,50 +8,84 @@
  */
 
 import { z } from 'zod';
-import type { ConditionGroup, RuleNode, StrategySpec } from '$lib/types';
+import type { ConditionGroup, ConditionLeaf, Operand, RuleNode, StrategySpec } from '$lib/types';
 
 const priceField = z.enum(['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4']);
 const offset = z.number().int().min(0);
+const aggregateFn = z.enum(['highest', 'lowest', 'mean', 'sum']);
 
-const operandSchema = z.discriminatedUnion('kind', [
-	z.object({
-		kind: z.literal('indicator'),
-		ref: z.string().min(1),
-		component: z.string().optional(),
-		offset
-	}),
-	z.object({ kind: z.literal('price'), field: priceField, offset }),
-	z.object({ kind: z.literal('constant'), value: z.number().finite() })
-]);
+// Recursive: an `aggregate` operand nests another `Operand` as its `source`.
+// `z.lazy` defers evaluation so the schema can reference itself; a plain
+// `union` (not `discriminatedUnion`) is required because lazy members can't be
+// part of a discriminated union.
+const operandSchema: z.ZodType<Operand> = z.lazy(() =>
+	z.union([
+		z.object({
+			kind: z.literal('indicator'),
+			ref: z.string().min(1),
+			component: z.string().optional(),
+			offset
+		}),
+		z.object({ kind: z.literal('price'), field: priceField, offset }),
+		z.object({ kind: z.literal('constant'), value: z.number().finite() }),
+		z.object({
+			kind: z.literal('aggregate'),
+			fn: aggregateFn,
+			source: operandSchema,
+			window: z.number().int().min(1),
+			offset
+		})
+	])
+);
 
 const binaryOperator = z.enum(['crossover', 'crossunder', 'gt', 'gte', 'lt', 'lte', 'eq']);
 const unaryOperator = z.enum(['rising', 'falling']);
 const rangeOperator = z.enum(['insideRange', 'outsideRange']);
+const persistenceOperator = z.enum(['gt', 'gte', 'lt', 'lte']);
 
-const conditionLeafSchema = z.discriminatedUnion('kind', [
-	z.object({
-		kind: z.literal('binary'),
-		id: z.string(),
-		left: operandSchema,
-		op: binaryOperator,
-		right: operandSchema
-	}),
-	z.object({
-		kind: z.literal('unary'),
-		id: z.string(),
-		operand: operandSchema,
-		op: unaryOperator,
-		lookback: z.number().int().min(1)
-	}),
-	z.object({
-		kind: z.literal('range'),
-		id: z.string(),
-		operand: operandSchema,
-		op: rangeOperator,
-		lower: operandSchema,
-		upper: operandSchema
-	})
-]);
+// Recursive: a `sequence` leaf nests two `ConditionLeaf` children. Lazy +
+// `union` for the same reason as `operandSchema`.
+const conditionLeafSchema: z.ZodType<ConditionLeaf> = z.lazy(() =>
+	z.union([
+		z.object({
+			kind: z.literal('binary'),
+			id: z.string(),
+			left: operandSchema,
+			op: binaryOperator,
+			right: operandSchema
+		}),
+		z.object({
+			kind: z.literal('unary'),
+			id: z.string(),
+			operand: operandSchema,
+			op: unaryOperator,
+			lookback: z.number().int().min(1)
+		}),
+		z.object({
+			kind: z.literal('range'),
+			id: z.string(),
+			operand: operandSchema,
+			op: rangeOperator,
+			lower: operandSchema,
+			upper: operandSchema
+		}),
+		z.object({
+			kind: z.literal('persistence'),
+			id: z.string(),
+			operand: operandSchema,
+			op: persistenceOperator,
+			threshold: operandSchema,
+			bars: z.number().int().min(1)
+		}),
+		z.object({
+			kind: z.literal('sequence'),
+			id: z.string(),
+			first: conditionLeafSchema,
+			second: conditionLeafSchema,
+			withinBars: z.number().int().min(1)
+		})
+	])
+);
 
 const conditionGroupSchema: z.ZodType<ConditionGroup> = z.lazy(() =>
 	z.object({
