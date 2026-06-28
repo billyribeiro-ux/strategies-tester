@@ -3,13 +3,20 @@
 		DownloadSimple,
 		FileCsv,
 		FileXls,
+		FileHtml,
 		BracketsCurly,
 		CaretDown,
 		SpinnerGap
 	} from 'phosphor-svelte';
 	import type { BacktestResult, Trade } from '$lib/types';
 	import { Button } from '$lib/components/ui';
-	import { buildFilename, exportCsv, exportXlsx, exportResultJson } from '$lib/export';
+	import {
+		buildFilename,
+		exportCsv,
+		exportXlsx,
+		exportResultJson,
+		exportTearsheet
+	} from '$lib/export';
 
 	interface Props {
 		result: BacktestResult;
@@ -81,6 +88,16 @@
 			error = e instanceof Error ? e.message : 'JSON export failed.';
 		}
 	}
+
+	function onTearsheet() {
+		error = null;
+		close();
+		try {
+			exportTearsheet(result, buildFilename(result.spec, 'html'));
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Tearsheet export failed.';
+		}
+	}
 </script>
 
 <div class="toolbar">
@@ -128,6 +145,13 @@
 					<span class="lines">
 						<span class="t">JSON</span>
 						<span class="s">Full result (spec + all data)</span>
+					</span>
+				</button>
+				<button type="button" role="menuitem" class="item" onclick={onTearsheet}>
+					<FileHtml size={17} />
+					<span class="lines">
+						<span class="t">Tearsheet</span>
+						<span class="s">Standalone HTML report</span>
 					</span>
 				</button>
 			</div>

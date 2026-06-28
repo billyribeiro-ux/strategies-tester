@@ -1,8 +1,18 @@
 <script lang="ts">
 	import { goto, invalidateAll } from '$app/navigation';
-	import { ArrowLeft, Warning, ChartLine, ChartBar, CalendarBlank, Table } from 'phosphor-svelte';
-	import type { Trade } from '$lib/types';
-	import { Panel, Callout, ErrorState, EmptyState } from '$lib/components/ui';
+	import {
+		ArrowLeft,
+		Warning,
+		ChartLine,
+		ChartBar,
+		CalendarBlank,
+		Table,
+		ShieldCheck
+	} from 'phosphor-svelte';
+	import type { Trade, ValidationReport } from '$lib/types';
+	import { Panel, Callout, ErrorState, EmptyState, Button } from '$lib/components/ui';
+	import { ValidationPanel } from '$lib/components/validation';
+	import { createApiClient, ApiError } from '$lib/api/client';
 	import { formatDateTime } from '$lib/utils/format';
 
 	import SummaryCards from '$lib/components/results/SummaryCards.svelte';
@@ -22,11 +32,31 @@
 	let { data }: Props = $props();
 
 	const result = $derived(data.result);
+	const api = createApiClient();
 
 	// Trades shown by the table after filtering/sorting — exports use these.
 	let filteredTrades = $state<Trade[]>([]);
 	function handleFilteredChange(trades: Trade[]) {
 		filteredTrades = trades;
+	}
+
+	// Statistical validation (Deflated Sharpe + Monte-Carlo) for this run.
+	let validating = $state(false);
+	let valError = $state<string | null>(null);
+	let validation = $state<ValidationReport | null>(null);
+
+	async function runValidation() {
+		if (!result) return;
+		valError = null;
+		validating = true;
+		validation = null;
+		try {
+			validation = await api.validateStrategy(result.spec);
+		} catch (e) {
+			valError = e instanceof ApiError ? e.message : 'Validation failed.';
+		} finally {
+			validating = false;
+		}
 	}
 
 	function backToBuilder() {
@@ -109,6 +139,34 @@
 		<Panel title="Price chart">
 			{#snippet icon()}<ChartLine size={18} />{/snippet}
 			<PriceChartPanel {result} />
+		</Panel>
+
+		<Panel title="Statistical validation">
+			{#snippet icon()}<ShieldCheck size={18} />{/snippet}
+			{#if !validation && !validating}
+				<div class="validate-cta">
+					<p>
+						Stress-test this run for overfitting: Deflated Sharpe, Monte-Carlo trade-order and
+						bootstrap spreads, and a randomized-entry null baseline.
+					</p>
+					<Button variant="primary" onclick={runValidation}>
+						{#snippet icon()}<ShieldCheck size={16} />{/snippet}
+						Run validation
+					</Button>
+				</div>
+			{/if}
+			{#if valError}
+				<Callout tone="danger" title="Validation failed">
+					{#snippet icon()}<Warning size={16} weight="fill" />{/snippet}
+					{valError}
+					{#if /api key/i.test(valError)}
+						— <a href="/settings">Add your FMP key in Settings</a>.
+					{/if}
+				</Callout>
+			{/if}
+			{#if validating || validation}
+				<ValidationPanel report={validation} loading={validating} />
+			{/if}
 		</Panel>
 
 		<Panel title="Trade ledger">
@@ -195,5 +253,17 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
+	}
+	.validate-cta {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-4);
+		flex-wrap: wrap;
+	}
+	.validate-cta p {
+		font-size: var(--fs-sm);
+		color: var(--c-text-muted);
+		max-width: 40rem;
 	}
 </style>
