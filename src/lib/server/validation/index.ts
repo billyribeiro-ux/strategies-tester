@@ -9,3 +9,4 @@ export * from './deflated-sharpe';
 export * from './pbo';
 export * from './cpcv';
 export * from './monte-carlo';
+export * from './report';
