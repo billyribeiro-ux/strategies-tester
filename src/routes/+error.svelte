@@ -22,8 +22,7 @@
 	<h1>{heading}</h1>
 	<p class="message">
 		{#if isNotFound}
-			We couldn’t find <code>{page.url.pathname}</code>. It may have moved, or never
-			existed.
+			We couldn’t find <code>{page.url.pathname}</code>. It may have moved, or never existed.
 		{:else}
 			{message}
 		{/if}

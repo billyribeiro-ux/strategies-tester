@@ -67,33 +67,28 @@ pnpm test                       # full suite
 
 Verified against `engine.ts` + `evaluate.ts`, each claim backed by a test.
 
-| §   | Requirement                                                 | Status                    | Evidence / notes                                                                                                                                                                        |
-| --- | ----------------------------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.1 | No look-ahead / point-in-time                               | ✅ **proven**             | `evaluate.ts` reads only `i - offset` and `i-1`; **leak gate** proves future-invariance empirically                                                                                     |
-| 2.2 | Realistic fills (next-bar-open default, never signal close) | ✅ **proven for default** | `resolveFill` default `nextOpen` → `candles[idx+1].o`; checkpoint test proves it across a gap. ⚠️ the optional `close`/`signalPrice` fill models DO fill at the signal bar — see gap G1 |
-| 2.2 | Slippage + commission                                       | ✅                        | `applySlippage` (always adverse) + `commissionFor` (per-share/trade/percent), both legs in P&L                                                                                          |
-| 2.3 | Liquidity cap (% of bar volume)                             | ❌ **gap G2**             | no volume-based fill cap yet                                                                                                                                                            |
-| 2.4 | Survivorship-free PIT universe                              | ❌ **gap G3**             | data-layer work (P1)                                                                                                                                                                    |
-| 2.5 | Corporate actions (PIT)                                     | ⚠️ **gap G4**             | relies on FMP adjusted EOD; needs explicit verification + split/dividend handling                                                                                                       |
-| 2.6 | Correct accounting (integer sizing, cash/margin, sessions)  | ✅ mostly                 | integer `floor` sizing, long/short cash settlement, session filter exists; margin/borrow not modeled (G5)                                                                               |
-| 2.7 | Determinism                                                 | ✅ **proven**             | determinism test in `engine.spec.ts`; only `runId`/`computedAt` vary                                                                                                                    |
+| §   | Requirement                                                 | Status        | Evidence / notes                                                                                                                                                                                                                                      |
+| --- | ----------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.1 | No look-ahead / point-in-time                               | ✅ **proven** | `evaluate.ts` reads only `i - offset` and `i-1`; **leak gate** proves future-invariance empirically                                                                                                                                                   |
+| 2.2 | Realistic fills (next-bar-open default, never signal close) | ✅ **proven** | `resolveFill` default `nextOpen` → `candles[idx+1].o`; checkpoint test proves it across a gap. The optional `close`/`signalPrice` models are flagged lookahead-optimistic in `result.warnings` (G1 closed). Limit/stop entry orders also implemented. |
+| 2.2 | Slippage + commission + borrow                              | ✅            | `applySlippage` (always adverse) + `commissionFor`, both legs in P&L; short borrow cost (`shortBorrowAPR`) accrued per bar held                                                                                                                       |
+| 2.3 | Liquidity cap (% of bar volume)                             | ✅            | `execution.maxBarVolumePct` caps fill qty at `floor(bar.volume × pct/100)`; warns once per run (G2 closed)                                                                                                                                            |
+| 2.4 | Survivorship-free PIT universe                              | ✅            | `server/universe/` — explicit + FMP PIT providers (delisted names, coverage gaps); usable in the `/universe` explorer **and** wired into runs via `universe.source` (G3 closed)                                                                       |
+| 2.5 | Corporate actions (PIT)                                     | ✅            | daily fetch uses FMP's **dividend-adjusted** EOD endpoint; `applyAdjustment` prefers adjusted OHLC or scales by `adjClose/close`; weekly/monthly inherit it (G4 closed)                                                                               |
+| 2.6 | Correct accounting (integer sizing, cash, sessions)         | ✅ mostly     | integer `floor` sizing, long/short cash settlement, session filter, heat cap + drawdown circuit-breaker; full margin/leverage not modeled (G5)                                                                                                        |
+| 2.7 | Determinism                                                 | ✅ **proven** | determinism test in `engine.spec.ts`; seeded RNG for all Monte-Carlo; only `runId`/`computedAt` vary                                                                                                                                                  |
 
 ### Known correctness gaps (tracked)
 
-- **G1 — lookahead-optimistic fill models.** `fillOn: 'close' | 'signalPrice'` fill at
-  the signal bar, violating §2.2's "never fill at the signal bar's close." Action:
-  gate these behind an explicit "research only" flag and surface a warning in the
-  audit record; keep `nextOpen` (or worse) as the only default.
-- **G2 — no liquidity cap.** Add `maxBarVolumePct` to execution; cap fill qty at
-  `floor(bar.volume × pct)` and record partial fills.
-- **G3 — survivorship-free PIT universe.** Build the source-agnostic universe
-  interface with two providers: explicit symbol lists **and** best-effort FMP PIT
-  membership (delisted list + historical constituents), with coverage gaps flagged
-  in the audit record.
-- **G4 — corporate actions.** Verify FMP adjustment; implement PIT split/dividend
-  handling and symbol-change mapping.
-- **G5 — margin / borrow / HTB.** Model borrow cost + hard-to-borrow for shorts;
-  margin and portfolio financing.
+- **G1 — lookahead-optimistic fill models.** ✅ **Closed** — `fillOn: 'close' | 'signalPrice'`
+  now emit a loud `lookahead-optimistic` warning in the result; `nextOpen` is the only
+  realistic default and the `audit.lookaheadOptimistic` flag records it.
+- **G2 — liquidity cap.** ✅ **Closed** — `execution.maxBarVolumePct`.
+- **G3 — survivorship-free PIT universe.** ✅ **Closed** — explicit + FMP PIT providers,
+  wired into runs (`universe.source`), coverage gaps surfaced.
+- **G4 — corporate actions.** ✅ **Closed** — dividend-adjusted EOD + `applyAdjustment`.
+- **G5 — margin / leverage.** 🟡 Partial — short borrow cost modeled; full margin /
+  portfolio financing / hard-to-borrow not yet.
 
 ---
 
@@ -101,24 +96,32 @@ Verified against `engine.ts` + `evaluate.ts`, each claim backed by a test.
 
 Status: ✅ done · 🟡 partial · ⬜ not started
 
-| Phase  | Scope                                                                                                                   | Status                                                                                                                                                         |
-| ------ | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1     | Data layer: FMP adapter, PIT store, all timeframes (incl. resampled W/M), corporate actions, survivorship-free universe | 🟡 adapter + intraday/daily + weekly resample + cache exist; PIT universe (G3), monthly, corp-actions (G4) pending                                             |
-| P2     | Correctness core + event-driven engine + fill/cost model                                                                | 🟡 point-in-time + next-bar-open + slippage/commission proven; liquidity cap (G2), advanced orders pending                                                     |
-| P3     | Rule builder: indicators, operator grammar, rule-tree JSON, **closed-bar** eval                                         | 🟡 registry indicators + nestable AND/OR + cross/compare operators + serializable spec exist; missing operators (state/sequence/persistence, MTF refs) tracked |
-| P4     | Execution: order types, sizing, risk controls, full lifecycle (scale-in/out, re-entry)                                  | 🟡 market fills, 4 sizing modes, stops/targets/trailing, pyramiding; brackets/OCO/limit-stop, scale-out, portfolio heat pending                                |
-| **P5** | **Validation suite (§6) + analytics (§7)**                                                                              | 🟡 **LEAK GATE ✅**, walk-forward ✅; CPCV+purge/embargo, DSR, PBO, Monte-Carlo null baseline, parameter-plateau heatmaps ⬜                                   |
-| P6     | Optimization (grid/random/Bayesian/genetic) with walk-forward baked in                                                  | 🟡 grid sweep + anchored walk-forward exist; robust objectives (OOS-deflated Sharpe), random/Bayesian/genetic ⬜                                               |
-| P7     | Reporting/tearsheets + paper-trade/forward bridge                                                                       | 🟡 charts + CSV/Excel/JSON export exist; tearsheet PDF, paper engine, divergence monitor ⬜                                                                    |
-| P8     | Platform: reproducibility, experiment tracking, **audit records**                                                       | ⬜ versioned runs exist; per-result audit record (fill model, costs, data version, slippage, leak-gate verdict) ⬜                                             |
+| Phase  | Scope                                                                                                                   | Status                                                                                                                                                                                                           |
+| ------ | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1     | Data layer: FMP adapter, PIT store, all timeframes (incl. resampled W/M), corporate actions, survivorship-free universe | ✅ adapter + intraday/daily + weekly/**monthly** resample + cache + **dividend-adjusted** prices + **PIT universe (explicit + FMP), wired into runs**                                                            |
+| P2     | Correctness core + event-driven engine + fill/cost model                                                                | ✅ point-in-time + next-bar-open (proven) + slippage/commission/borrow + **liquidity cap** + **limit/stop orders** (bracket/OCO/stop-limit ⬜)                                                                   |
+| P3     | Rule builder: indicators, operator grammar, rule-tree JSON, **closed-bar** eval                                         | ✅ registry indicators + nestable AND/OR + cross/compare/unary/range + **aggregate/persistence/sequence** + **multi-timeframe refs**; scale-in/out lifecycle ⬜                                                  |
+| P4     | Execution: order types, sizing, risk controls                                                                           | ✅ market/limit/stop fills, sizing (fixed/notional/%eq/risk/**vol-target/fractional-Kelly**), stops/targets/trailing/**time**, pyramiding, **heat cap + drawdown circuit-breaker**; sector/correlation limits ⬜ |
+| **P5** | **Validation suite (§6) + analytics (§7)**                                                                              | ✅ **LEAK GATE**, walk-forward, **CPCV (purge+embargo), DSR, PBO (CSCV), Monte-Carlo null baseline, parameter-plateau**; analytics (CVaR/ulcer/Calmar/Omega/attribution/regime) — wired into the UI              |
+| P6     | Optimization with walk-forward baked in                                                                                 | ✅ grid + **random** + **genetic** + robust objectives (OOS-deflated proxy) + anchored walk-forward; Bayesian ⬜                                                                                                 |
+| P7     | Reporting/tearsheets + paper-trade/forward bridge                                                                       | ✅ charts + CSV/Excel/JSON + **HTML tearsheet** + **paper-trade/forward bridge** + divergence monitor; PDF export + live broker ⬜                                                                               |
+| P8     | Platform: reproducibility, experiment tracking, **audit records**                                                       | ✅ versioned runs + **per-result audit record** (fill model, costs, liquidity cap, data assumptions) + determinism                                                                                               |
 
 ### The gates (no result is "trusted" until these pass)
 
 - **After P2:** render a known trade and prove next-bar-open fill — ✅ done (`leak-gate.spec.ts`).
-- **LEAK GATE (after P5):** a planted leak must be caught — ✅ done.
-- **Before trusting any optimization:** show DSR > 0, PBO < 0.5, and a parameter
-  **plateau** (not a lone spike) — ⬜ pending P5/P6.
-- **Before forward/live:** paper engine reproduces backtest fills bit-for-bit — ⬜ pending P7.
+- **LEAK GATE:** a planted leak must be caught — ✅ done (and re-run against every engine
+  feature added since: liquidity cap, orders, Kelly/borrow, MTF).
+- **Before trusting an optimization:** DSR, PBO and a parameter plateau — ✅ available via
+  `validateOptimization` and surfaced on the optimize page with a pass/warn/fail verdict.
+- **Before forward/live:** the paper engine reproduces backtest fills bit-for-bit — ✅ it
+  **is** the same engine (no logic fork); `divergence()` monitors live-vs-backtest drift.
+
+### Remaining (niche / future)
+
+Bracket-OCO/stop-limit/MOC-LOC order types · scale-in/out & re-entry lifecycle · sector &
+correlation exposure limits · full margin/leverage & hard-to-borrow · Bayesian optimization ·
+PDF tearsheet · a live broker adapter.
 
 ---
 
