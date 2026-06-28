@@ -149,16 +149,71 @@ function commissionFor(qty: number, price: number, spec: StrategySpec): number {
 // ---------------------------------------------------------------------------
 
 /**
+ * Running aggregates over the trades CLOSED so far in the run, maintained in
+ * `closePosition`. Used by fractional-Kelly sizing, which must size from
+ * point-in-time stats only (never future trades) to stay leak-free.
+ */
+interface ClosedTradeStats {
+	/** Trades closed with pnl > 0. */
+	wins: number;
+	/** Trades closed with pnl < 0. */
+	losses: number;
+	/** Sum of positive pnl across winning trades. */
+	sumWin: number;
+	/** Sum of |pnl| across losing trades (stored positive). */
+	sumLoss: number;
+}
+
+/** Minimum closed trades before fractional-Kelly estimates an edge (else warmup). */
+const KELLY_WARMUP_TRADES = 5;
+
+/**
+ * Conservative equity fraction used to BOOTSTRAP fractional-Kelly before enough
+ * trades have closed to estimate an edge. A small percentEquity-style default
+ * (2%) so a few trades can settle and feed the rolling stats; without it Kelly
+ * could never open a first position and would never produce any stats at all.
+ */
+const KELLY_WARMUP_FRACTION = 0.02;
+
+/**
+ * Effective equity fraction to bet for a fractional-Kelly entry, computed from the
+ * CLOSED-trade aggregates only (point-in-time → leak-free).
+ *
+ * - Warmup (fewer than KELLY_WARMUP_TRADES closed trades): fall back to a small
+ *   conservative fixed fraction (KELLY_WARMUP_FRACTION) so positions can open and
+ *   feed the rolling stats. Documented fallback (percentEquity-style).
+ * - Post-warmup: `f* = max(0, W − (1−W)/R)` with `W = wins/total`,
+ *   `R = avgWin/|avgLoss|`, then scaled by `fraction`. If the payoff ratio is
+ *   undefined (no wins or no losses observed → avgWin/avgLoss 0) or R ≤ 0, f* = 0
+ *   → no bet (size 0). A losing history (low W / small R) drives f* to 0 likewise.
+ */
+function kellyFraction(stats: ClosedTradeStats, fraction: number): number {
+	const total = stats.wins + stats.losses;
+	if (total < KELLY_WARMUP_TRADES) return fraction * KELLY_WARMUP_FRACTION;
+	const avgWin = stats.wins > 0 ? stats.sumWin / stats.wins : 0;
+	const avgLoss = stats.losses > 0 ? stats.sumLoss / stats.losses : 0;
+	if (!(avgLoss > 0) || !(avgWin > 0)) return 0; // no payoff ratio definable → no bet
+	const w = stats.wins / total;
+	const r = avgWin / avgLoss;
+	if (!(r > 0)) return 0;
+	const fStar = Math.max(0, w - (1 - w) / r);
+	return fraction * fStar;
+}
+
+/**
  * Shares to trade for a new entry given current equity and fill price.
  * `atrValue` is the referenced ATR series value at the fill bar (NaN when the
  * sizing mode does not reference an ATR), used only by `volatilityTarget`.
+ * `stats` are the running CLOSED-trade aggregates as of the entry (point-in-time),
+ * used only by `fractionalKelly`.
  */
 function sizePosition(
 	spec: StrategySpec,
 	equity: number,
 	fillPrice: number,
 	stopPrice: number | null,
-	atrValue: number
+	atrValue: number,
+	stats: ClosedTradeStats
 ): number {
 	const sizing = spec.risk.positionSizing;
 	if (fillPrice <= 0) return 0;
@@ -183,6 +238,13 @@ function sizePosition(
 			if (!Number.isFinite(atrValue) || atrValue <= 0) return 0;
 			const volBudget = equity * (sizing.targetVolPercent / 100);
 			return Math.max(0, Math.floor(volBudget / atrValue));
+		}
+		case 'fractionalKelly': {
+			// shares = floor(equity × fraction × f* / fillPrice). During warmup or with
+			// no estimable edge, kellyFraction returns 0 → size 0 (no trade).
+			const frac = kellyFraction(stats, sizing.fraction);
+			if (!(frac > 0)) return 0;
+			return Math.max(0, Math.floor((equity * frac) / fillPrice));
 		}
 		default:
 			return assertNever(sizing, 'Unknown sizing mode');
@@ -340,6 +402,19 @@ export function runBacktest(
 	let cumulativePnl = 0;
 	let barsInMarket = 0;
 	let tradeSeq = 0;
+
+	// Running aggregates over trades CLOSED so far, for fractional-Kelly sizing.
+	// Updated in closePosition; read AS OF each entry → only already-closed trades
+	// inform sizing, so it is point-in-time and leak-free.
+	const closedStats: ClosedTradeStats = { wins: 0, losses: 0, sumWin: 0, sumLoss: 0 };
+
+	// §costs Short borrow: annual rate (percent) charged per bar on short notional.
+	// undefined/<=0 disables it. Precompute the per-bar fraction for this timeframe.
+	const rawBorrowApr = spec.risk.shortBorrowAPR;
+	const shortBorrowApr = typeof rawBorrowApr === 'number' && rawBorrowApr > 0 ? rawBorrowApr : null;
+	const SECONDS_PER_YEAR = 31_557_600;
+	const borrowPerBarRate =
+		shortBorrowApr !== null ? (shortBorrowApr / 100) * (timeframeSeconds / SECONDS_PER_YEAR) : 0;
 
 	const fillModel = spec.execution.fillOn;
 	const orderType = spec.execution.orderType;
@@ -842,7 +917,14 @@ export function runBacktest(
 		// Size from marked-to-market equity at the fill bar (cash + open positions).
 		const equity = markEquity(Date.parse(td.candles[fill.barIndex].t));
 		const sizingAtr = sizingAtrAtBar(spec, td, fill.barIndex);
-		const desiredQty = sizePosition(spec, equity, fillPrice, provisionalStop, sizingAtr);
+		const desiredQty = sizePosition(
+			spec,
+			equity,
+			fillPrice,
+			provisionalStop,
+			sizingAtr,
+			closedStats
+		);
 		// §5 Portfolio heat cap: skip the entry if it would push total open risk
 		// (qty × |entry − stop| across open positions + this one) over the limit.
 		if (desiredQty > 0 && exceedsHeatCap(desiredQty, fillPrice, provisionalStop, equity)) return;
@@ -887,7 +969,14 @@ export function runBacktest(
 		if (!(fillPrice > 0)) return;
 		const equity = markEquity(Date.parse(td.candles[fill.barIndex].t));
 		const sizingAtr = sizingAtrAtBar(spec, td, fill.barIndex);
-		const desiredAddQty = sizePosition(spec, equity, fillPrice, pos.stopPrice, sizingAtr);
+		const desiredAddQty = sizePosition(
+			spec,
+			equity,
+			fillPrice,
+			pos.stopPrice,
+			sizingAtr,
+			closedStats
+		);
 		// §2.3 Liquidity cap also constrains pyramided adds.
 		const addQty = applyLiquidityCap(desiredAddQty, td, fill.barIndex);
 		if (addQty <= 0) return;
@@ -918,14 +1007,24 @@ export function runBacktest(
 		// Cash settle: longs receive proceeds - fees; shorts pay to buy back + fees.
 		cash += pos.side === 'long' ? proceeds - commission : -(proceeds + commission);
 
+		// §costs Short borrow: accrue per bar held on the short's entry notional, then
+		// deduct the total from cash and the trade's P&L at close. Longs accrue nothing.
+		// Summed at close (vs per-bar) so it is deterministic and fully reflected here.
+		const barsHeld = Math.max(0, exitBarIndex - pos.entryBarIndex);
+		const borrowCost =
+			pos.side === 'short' && borrowPerBarRate > 0
+				? pos.entryPrice * pos.qty * borrowPerBarRate * barsHeld
+				: 0;
+		if (borrowCost > 0) cash -= borrowCost;
+
 		const grossPnl =
 			pos.side === 'long'
 				? (exitPrice - pos.entryPrice) * pos.qty
 				: (pos.entryPrice - exitPrice) * pos.qty;
 		// Entry commission is already reflected in cash; approximate per-trade net
-		// P&L by subtracting both legs' commissions from the gross.
+		// P&L by subtracting both legs' commissions and any borrow cost from the gross.
 		const entryCommission = commissionFor(pos.qty, pos.entryPrice, spec);
-		const pnl = grossPnl - commission - entryCommission;
+		const pnl = grossPnl - commission - entryCommission - borrowCost;
 		const entryNotional = pos.entryPrice * pos.qty;
 		const pnlPct = entryNotional > 0 ? pnl / entryNotional : 0;
 		const rMultiple =
@@ -934,6 +1033,17 @@ export function runBacktest(
 				: NaN;
 
 		cumulativePnl += pnl;
+
+		// Update the running CLOSED-trade aggregates for fractional-Kelly sizing. This
+		// happens at close, so a later entry's sizing only ever sees trades that have
+		// already settled (point-in-time / leak-free).
+		if (pnl > 0) {
+			closedStats.wins += 1;
+			closedStats.sumWin += pnl;
+		} else if (pnl < 0) {
+			closedStats.losses += 1;
+			closedStats.sumLoss += -pnl;
+		}
 
 		// MAE/MFE as fractions of entry price over the holding period.
 		const mae =
@@ -963,7 +1073,7 @@ export function runBacktest(
 			mae: Math.min(0, mae),
 			mfe: Math.max(0, mfe),
 			exitReason: reason,
-			barsHeld: Math.max(0, exitBarIndex - pos.entryBarIndex)
+			barsHeld
 		});
 	}
 }

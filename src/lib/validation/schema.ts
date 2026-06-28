@@ -138,7 +138,8 @@ const positionSizingSchema = z.discriminatedUnion('mode', [
 		mode: z.literal('volatilityTarget'),
 		targetVolPercent: z.number().positive(),
 		atrRef: z.string().min(1)
-	})
+	}),
+	z.object({ mode: z.literal('fractionalKelly'), fraction: z.number().gt(0).max(1) })
 ]);
 
 const stopLossSchema = z.discriminatedUnion('mode', [
@@ -184,6 +185,7 @@ const riskSchema = z.object({
 	pyramiding: z.number().int().min(0),
 	commission: commissionSchema,
 	slippage: slippageSchema,
+	shortBorrowAPR: z.number().min(0).optional(),
 	maxBarsInTrade: z.number().int().positive().optional(),
 	maxDrawdownStopPercent: z.number().gt(0).max(100).optional(),
 	maxPortfolioHeatPercent: z.number().gt(0).max(100).optional()

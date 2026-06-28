@@ -219,7 +219,19 @@ export type PositionSizing =
 	| { mode: 'fixedNotional'; notional: number }
 	| { mode: 'percentEquity'; percent: number }
 	| { mode: 'riskBased'; riskPercent: number } // requires a non-'none' stopLoss
-	| { mode: 'volatilityTarget'; targetVolPercent: number; atrRef: string };
+	| { mode: 'volatilityTarget'; targetVolPercent: number; atrRef: string }
+	/**
+	 * Fractional-Kelly sizing (§5). Sizes from the rolling stats of CLOSED trades
+	 * SO FAR in the run (point-in-time — never future trades): win rate
+	 * `W = wins/total`, payoff `R = avgWin/|avgLoss|`, Kelly `f* = max(0, W − (1−W)/R)`.
+	 * `shares = floor(equity × fraction × f* / fillPrice)`, ≥ 0. `fraction` in (0, 1]
+	 * (typically ≤ 0.5) scales the full-Kelly bet down for safety. During warmup
+	 * (fewer than 5 closed trades) or when `R`/avgLoss is undefined/0, `f*` is
+	 * treated as 0 → size 0 (conservative: trade only once an edge has been
+	 * observed). Leak-free: the aggregates read at entry include only already-closed
+	 * trades.
+	 */
+	| { mode: 'fractionalKelly'; fraction: number };
 
 export type SizingMode = PositionSizing['mode'];
 
@@ -261,6 +273,14 @@ export interface Risk {
 	pyramiding: number; // max additional entries per open position (0 = none)
 	commission: CommissionModel;
 	slippage: SlippageModel;
+	/**
+	 * Short borrow cost (§ costs): annual borrow rate, in percent, charged on the
+	 * notional of any OPEN SHORT position for every bar it is held. `undefined`/`0`
+	 * = no borrow cost. Per-bar cost = shortNotional × (APR/100) ×
+	 * (timeframeSeconds / 31_557_600); it is summed over the bars held and deducted
+	 * from cash and the trade's P&L at close. Longs are unaffected. In [0, ∞).
+	 */
+	shortBorrowAPR?: number;
 	/**
 	 * Time exit: force-close an open position once it has been held this many bars,
 	 * filled look-ahead-safe at the next bar's open (same path as a signal exit).

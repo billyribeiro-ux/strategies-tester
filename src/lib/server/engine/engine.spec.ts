@@ -802,3 +802,152 @@ describe('runBacktest — portfolio heat cap (§5)', () => {
 		expect(result.warnings.some((w) => /heat cap/i.test(w))).toBe(false);
 	});
 });
+
+describe('runBacktest — fractional-Kelly sizing (§5)', () => {
+	// Each cycle: close starts at 100, crosses 102 to enter (fills next open ≈103),
+	// then EITHER jumps up (5% take-profit hit → clean +5% win) or drops hard (5%
+	// stop hit → clean −5% loss), then returns to 100 so the next cycle re-crosses.
+	// Equal-magnitude wins/losses make the payoff ratio R ≈ 1, so a high win rate
+	// gives a solidly positive Kelly fraction. One trade per cycle, deterministic.
+	const winCycle = [100, 101, 103, 112, 100, 100]; // enter ≈103, gap to 112 → TP
+	const loseCycle = [100, 101, 103, 90, 100, 100]; // enter ≈103, gap to 90 → stop
+	function cyclesFrom(pattern: boolean[], reps: number): number[] {
+		const out: number[] = [];
+		for (let k = 0; k < reps; k++)
+			for (const win of pattern) out.push(...(win ? winCycle : loseCycle));
+		return out;
+	}
+
+	const kellyRisk = {
+		...baseSpec().risk,
+		initialCapital: 1_000_000,
+		positionSizing: { mode: 'fractionalKelly' as const, fraction: 0.5 },
+		stopLoss: { mode: 'percent' as const, percent: 5 },
+		takeProfit: { mode: 'percent' as const, percent: 5 }
+	};
+	const kellyRules = {
+		longEntry: group('AND', [binary(price('close'), 'crossover', constant(102))]),
+		longExit: emptyGroup(),
+		shortEntry: emptyGroup(),
+		shortExit: emptyGroup()
+	};
+
+	it('sizes small during warmup then scales up once a positive edge is established', () => {
+		const spec = baseSpec({ risk: kellyRisk, rules: kellyRules });
+		// 70% win rate (7 of 10), interleaved so losses land inside the warmup window
+		// → R is defined the moment warmup ends.
+		const pattern = [true, true, true, false, true, true, false, true, true, false];
+		const result = runBacktest(spec, { TEST: candles(cyclesFrom(pattern, 6)) });
+
+		expect(result.trades.length).toBeGreaterThan(6);
+		// The first 5 trades are sized by the conservative warmup fallback (identical,
+		// small qty since equity barely moves over a few small trades).
+		const warmupQty = result.trades[0].qty;
+		expect(warmupQty).toBeGreaterThan(0);
+		for (let i = 1; i < 5; i++) expect(result.trades[i].qty).toBe(warmupQty);
+		// The 6th trade (entry sized once 5 trades have CLOSED) reflects the rolling
+		// stat — W=0.8, R≈1 ⇒ f*≈0.6, ×0.5 ⇒ ~0.3 of equity — so it is far larger.
+		const firstPostWarmup = result.trades[5].qty;
+		expect(firstPostWarmup).toBeGreaterThan(warmupQty * 10);
+		// And the rolling stat keeps driving non-trivial sizing on later entries.
+		const lastQty = result.trades[result.trades.length - 1].qty;
+		expect(lastQty).toBeGreaterThan(warmupQty);
+	});
+
+	it('a losing history drives f* to 0 → no sizing after warmup', () => {
+		const spec = baseSpec({ risk: kellyRisk, rules: kellyRules });
+		// Every cycle loses. After 5 losers settle, W=0 and avgWin=0 ⇒ f*=0 ⇒ every
+		// subsequent entry sizes 0, so the trade count is capped near the warmup
+		// window and never reaches one-per-cycle (20 cycles ⇒ would be 20 trades).
+		const result = runBacktest(spec, { TEST: candles(cyclesFrom([false], 20)) });
+
+		const losers = result.trades.filter((t) => t.pnl < 0);
+		expect(losers.length).toBeGreaterThanOrEqual(5);
+		expect(result.trades.every((t) => t.pnl < 0)).toBe(true);
+		// Capped at the warmup trades — the negative edge halts further sizing.
+		expect(result.trades.length).toBeLessThan(10);
+	});
+
+	it('is leak-free: Kelly stats read only CLOSED trades (gate passes)', () => {
+		// The leak gate corrupts the future at every cut; a settled trade may not
+		// change. Kelly sizing reads only already-closed-trade aggregates, so a
+		// perturbed future cannot alter a past entry's size → the gate must pass.
+		const spec = baseSpec({ risk: kellyRisk, rules: kellyRules });
+		const data = { TEST: candles(cyclesFrom([true, true, false, true, true, false], 6)) };
+		expect(() => assertNoLookahead(spec, data)).not.toThrow();
+	});
+});
+
+describe('runBacktest — short borrow cost (§ costs)', () => {
+	it('reduces a short trade pnl versus zero-APR on the same price path', () => {
+		// Falls through 105 (short entry), keeps falling, then rises back through 95
+		// (short exit). Identical price path; only shortBorrowAPR differs.
+		const rules = {
+			longEntry: emptyGroup(),
+			longExit: emptyGroup(),
+			shortEntry: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+			shortExit: group('AND', [binary(price('close'), 'crossover', constant(95))])
+		};
+		const data = { TEST: candles([110, 108, 104, 100, 96, 92, 94, 96, 98]) };
+
+		const noBorrow = runBacktest(baseSpec({ rules }), data);
+		const withBorrow = runBacktest(
+			baseSpec({ rules, risk: { ...baseSpec().risk, shortBorrowAPR: 50 } }),
+			data
+		);
+
+		expect(noBorrow.trades.length).toBe(1);
+		expect(withBorrow.trades.length).toBe(1);
+		const a = noBorrow.trades[0];
+		const b = withBorrow.trades[0];
+		// Same entry/exit fills (same price path) — only the borrow cost differs.
+		expect(a.entryPrice).toBe(b.entryPrice);
+		expect(a.exitPrice).toBe(b.exitPrice);
+		expect(a.qty).toBe(b.qty);
+		// Borrow cost strictly reduces the short's pnl.
+		expect(b.pnl).toBeLessThan(a.pnl);
+
+		// The reduction equals the accrued borrow: notional × (APR/100) ×
+		// (timeframeSeconds/yr) × barsHeld. 1d = 86_400s; yr = 31_557_600s.
+		const barsHeld = b.barsHeld;
+		const perBar = (50 / 100) * (86_400 / 31_557_600);
+		const expectedBorrow = b.entryPrice * b.qty * perBar * barsHeld;
+		expect(a.pnl - b.pnl).toBeCloseTo(expectedBorrow, 6);
+	});
+
+	it('does not affect long trades', () => {
+		const rules = {
+			longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+			longExit: group('AND', [binary(price('close'), 'crossunder', constant(115))]),
+			shortEntry: emptyGroup(),
+			shortExit: emptyGroup()
+		};
+		const data = { TEST: candles([100, 104, 106, 110, 116, 120, 118, 114, 110]) };
+		const noBorrow = runBacktest(baseSpec({ rules }), data);
+		const withBorrow = runBacktest(
+			baseSpec({ rules, risk: { ...baseSpec().risk, shortBorrowAPR: 50 } }),
+			data
+		);
+		expect(noBorrow.trades.length).toBe(1);
+		expect(withBorrow.trades.length).toBe(1);
+		// Longs accrue no borrow cost, so pnl is identical.
+		expect(withBorrow.trades[0].pnl).toBeCloseTo(noBorrow.trades[0].pnl, 9);
+	});
+
+	it('is leak-free with borrow accrued at close (gate passes over a zigzag)', () => {
+		// Borrow cost depends only on bars held and entry notional (both known at
+		// close from past bars), so corrupting the future leaves settled shorts
+		// unchanged → the leak gate passes.
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const spec = baseSpec({
+			risk: { ...baseSpec().risk, shortBorrowAPR: 50 },
+			rules: {
+				longEntry: emptyGroup(),
+				longExit: emptyGroup(),
+				shortEntry: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortExit: group('AND', [binary(price('close'), 'crossover', constant(105))])
+			}
+		});
+		expect(() => assertNoLookahead(spec, { TEST: candles(closes) })).not.toThrow();
+	});
+});

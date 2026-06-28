@@ -34,6 +34,7 @@
 		{ value: 'percentEquity', label: '% of equity' },
 		{ value: 'riskBased', label: 'Risk-based (% per trade)' },
 		{ value: 'volatilityTarget', label: 'Volatility target (ATR)' },
+		{ value: 'fractionalKelly', label: 'Fractional Kelly' },
 		{ value: 'fixedShares', label: 'Fixed shares' },
 		{ value: 'fixedNotional', label: 'Fixed notional' }
 	];
@@ -48,6 +49,9 @@
 				break;
 			case 'volatilityTarget':
 				store.setSizing({ mode, targetVolPercent: 1, atrRef: atrOptions[0]?.value ?? '' });
+				break;
+			case 'fractionalKelly':
+				store.setSizing({ mode, fraction: 0.5 });
 				break;
 			case 'fixedShares':
 				store.setSizing({ mode, shares: 100 });
@@ -345,6 +349,23 @@
 					{:else}
 						<Callout tone="warning">Add an ATR indicator to use volatility-target sizing.</Callout>
 					{/if}
+				{:else if risk.positionSizing.mode === 'fractionalKelly'}
+					<NumberInput
+						label="Kelly fraction"
+						hint="Fraction of full Kelly (≤ 0.5 typical); sizes from closed-trade edge"
+						min={0}
+						max={1}
+						step={0.05}
+						bind:value={
+							() =>
+								risk.positionSizing.mode === 'fractionalKelly' ? risk.positionSizing.fraction : 0,
+							(v) =>
+								store.setSizing({
+									mode: 'fractionalKelly',
+									fraction: Math.min(1, Math.max(0.01, v))
+								})
+						}
+					/>
 				{:else if risk.positionSizing.mode === 'fixedShares'}
 					<NumberInput
 						label="Shares"
@@ -666,6 +687,18 @@
 						}
 					/>
 				{/if}
+			</div>
+			<div class="grid">
+				<NumberInput
+					label="Short borrow APR"
+					suffix="%"
+					hint="Annual cost to borrow shorts, 0 = none"
+					min={0}
+					step={0.5}
+					bind:value={
+						() => risk.shortBorrowAPR ?? 0, (v) => store.setShortBorrowAPR(v > 0 ? v : undefined)
+					}
+				/>
 			</div>
 		</section>
 	</div>

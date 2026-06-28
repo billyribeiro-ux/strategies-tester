@@ -364,6 +364,13 @@ export class StrategyStore {
 		this.markDirty();
 	};
 
+	/** Short borrow cost (annual %, §costs). Non-positive/NaN clears it (undefined). */
+	setShortBorrowAPR = (apr: number | undefined) => {
+		this.spec.risk.shortBorrowAPR =
+			typeof apr === 'number' && Number.isFinite(apr) && apr > 0 ? apr : undefined;
+		this.markDirty();
+	};
+
 	// --- execution ----------------------------------------------------------
 
 	setFillModel = (fillOn: FillModel) => {
