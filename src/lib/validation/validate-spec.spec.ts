@@ -59,6 +59,48 @@ describe('validateSpec', () => {
 		);
 	});
 
+	it('rejects an rMultiple scale-out level when there is no stop loss (§4c)', () => {
+		const spec = validSpec();
+		spec.risk.stopLoss = { mode: 'none' };
+		spec.risk.scaleOut = { levels: [{ trigger: { kind: 'rMultiple', r: 2 }, fraction: 0.5 }] };
+		const issues = v(spec);
+		expect(
+			issues.some((i) => i.path === 'risk.scaleOut.levels[0].trigger' && i.severity === 'error')
+		).toBe(true);
+	});
+
+	it('accepts an rMultiple scale-out level when a stop loss is present (§4c)', () => {
+		const spec = validSpec();
+		spec.risk.stopLoss = { mode: 'percent', percent: 2 };
+		spec.risk.scaleOut = { levels: [{ trigger: { kind: 'rMultiple', r: 2 }, fraction: 0.5 }] };
+		expect(hasErrors(v(spec))).toBe(false);
+	});
+
+	it('errors when scale-out fractions sum to more than 1 (§4c)', () => {
+		const spec = validSpec();
+		spec.risk.scaleOut = {
+			levels: [
+				{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.6 },
+				{ trigger: { kind: 'percent', percent: 10 }, fraction: 0.6 }
+			]
+		};
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'risk.scaleOut' && i.severity === 'error')).toBe(true);
+	});
+
+	it('warns (no error) when scale-out fractions sum to exactly 1 — no runner (§4c)', () => {
+		const spec = validSpec();
+		spec.risk.scaleOut = {
+			levels: [
+				{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.5 },
+				{ trigger: { kind: 'percent', percent: 10 }, fraction: 0.5 }
+			]
+		};
+		const issues = v(spec);
+		expect(hasErrors(issues)).toBe(false);
+		expect(issues.some((i) => i.path === 'risk.scaleOut' && i.severity === 'warning')).toBe(true);
+	});
+
 	it('errors on rising/falling applied to a constant', () => {
 		const spec = validSpec();
 		spec.rules.longEntry.children = [createUnaryLeaf({ kind: 'constant', value: 5 }, 'rising', 1)];
