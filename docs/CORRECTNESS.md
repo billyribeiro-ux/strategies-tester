@@ -100,10 +100,10 @@ Status: ✅ done · 🟡 partial · ⬜ not started
 | ------ | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1     | Data layer: FMP adapter, PIT store, all timeframes (incl. resampled W/M), corporate actions, survivorship-free universe | ✅ adapter + intraday/daily + weekly/**monthly** resample + cache + **dividend-adjusted** prices + **PIT universe (explicit + FMP), wired into runs**                                                            |
 | P2     | Correctness core + event-driven engine + fill/cost model                                                                | ✅ point-in-time + next-bar-open (proven) + slippage/commission/borrow + **liquidity cap** + **limit/stop orders** (bracket/OCO/stop-limit ⬜)                                                                   |
-| P3     | Rule builder: indicators, operator grammar, rule-tree JSON, **closed-bar** eval                                         | ✅ registry indicators + nestable AND/OR + cross/compare/unary/range + **aggregate/persistence/sequence** + **multi-timeframe refs**; scale-in/out lifecycle ⬜                                                  |
+| P3     | Rule builder: indicators, operator grammar, rule-tree JSON, **closed-bar** eval                                         | ✅ registry indicators + nestable AND/OR + cross/compare/unary/range + **aggregate/persistence/sequence** + **multi-timeframe refs** + **scale-out/partial-profit**; re-entry ⬜                                 |
 | P4     | Execution: order types, sizing, risk controls                                                                           | ✅ market/limit/stop fills, sizing (fixed/notional/%eq/risk/**vol-target/fractional-Kelly**), stops/targets/trailing/**time**, pyramiding, **heat cap + drawdown circuit-breaker**; sector/correlation limits ⬜ |
 | **P5** | **Validation suite (§6) + analytics (§7)**                                                                              | ✅ **LEAK GATE**, walk-forward, **CPCV (purge+embargo), DSR, PBO (CSCV), Monte-Carlo null baseline, parameter-plateau**; analytics (CVaR/ulcer/Calmar/Omega/attribution/regime) — wired into the UI              |
-| P6     | Optimization with walk-forward baked in                                                                                 | ✅ grid + **random** + **genetic** + robust objectives (OOS-deflated proxy) + anchored walk-forward; Bayesian ⬜                                                                                                 |
+| P6     | Optimization with walk-forward baked in                                                                                 | ✅ grid + **random** + **genetic** + **Bayesian (TPE)** + robust objectives (OOS-deflated proxy) + anchored walk-forward                                                                                         |
 | P7     | Reporting/tearsheets + paper-trade/forward bridge                                                                       | ✅ charts + CSV/Excel/JSON + **HTML tearsheet** + **paper-trade/forward bridge** + divergence monitor; PDF export + live broker ⬜                                                                               |
 | P8     | Platform: reproducibility, experiment tracking, **audit records**                                                       | ✅ versioned runs + **per-result audit record** (fill model, costs, liquidity cap, data assumptions) + determinism                                                                                               |
 
@@ -119,9 +119,8 @@ Status: ✅ done · 🟡 partial · ⬜ not started
 
 ### Remaining (niche / future)
 
-Bracket-OCO/stop-limit/MOC-LOC order types · scale-in/out & re-entry lifecycle · sector &
-correlation exposure limits · full margin/leverage & hard-to-borrow · Bayesian optimization ·
-PDF tearsheet · a live broker adapter.
+Bracket-OCO/stop-limit/MOC-LOC order types · re-entry lifecycle · sector & correlation
+exposure limits · full margin/leverage & hard-to-borrow · PDF tearsheet · a live broker adapter.
 
 ---
 
