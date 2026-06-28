@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # --- build stage -----------------------------------------------------------
-FROM node:24.17.0-bookworm-slim AS build
+FROM node:24.18.0-bookworm-slim AS build
 WORKDIR /app
 RUN corepack enable
 # Native build toolchain for better-sqlite3.
@@ -14,7 +14,7 @@ COPY . .
 RUN pnpm build
 
 # --- runtime stage ---------------------------------------------------------
-FROM node:24.17.0-bookworm-slim
+FROM node:24.18.0-bookworm-slim
 WORKDIR /app
 RUN corepack enable
 ENV NODE_ENV=production

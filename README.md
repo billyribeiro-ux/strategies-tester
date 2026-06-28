@@ -16,7 +16,7 @@ Every control in the UI edits a single serializable object, the **`StrategySpec`
 
 ## Prerequisites
 
-- **Node 24.17.0 LTS** (pinned in `.nvmrc` / `.node-version`; enforced via `engines` ≥ 24.17.0)
+- **Node 24.18.0 LTS** (pinned in `.nvmrc` / `.node-version`; enforced via `engines` ≥ 24.18.0)
 - **pnpm 11** — pinned via `packageManager`; run `corepack enable` to use it automatically
 - An FMP API key (the Ultimate plan unlocks intraday + long history)
 
