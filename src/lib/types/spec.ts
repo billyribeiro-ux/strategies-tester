@@ -164,7 +164,8 @@ export type PositionSizing =
 	| { mode: 'fixedShares'; shares: number }
 	| { mode: 'fixedNotional'; notional: number }
 	| { mode: 'percentEquity'; percent: number }
-	| { mode: 'riskBased'; riskPercent: number }; // requires a non-'none' stopLoss
+	| { mode: 'riskBased'; riskPercent: number } // requires a non-'none' stopLoss
+	| { mode: 'volatilityTarget'; targetVolPercent: number; atrRef: string };
 
 export type SizingMode = PositionSizing['mode'];
 
@@ -206,6 +207,25 @@ export interface Risk {
 	pyramiding: number; // max additional entries per open position (0 = none)
 	commission: CommissionModel;
 	slippage: SlippageModel;
+	/**
+	 * Time exit: force-close an open position once it has been held this many bars,
+	 * filled look-ahead-safe at the next bar's open (same path as a signal exit).
+	 * `undefined`/`0` = no time limit. Positive integer.
+	 */
+	maxBarsInTrade?: number;
+	/**
+	 * Portfolio drawdown circuit-breaker. Once marked equity falls below the
+	 * running peak by at least this percent, ALL new entries are halted for the
+	 * rest of the run (open positions keep being managed/exited normally).
+	 * `undefined` = off. In (0, 100].
+	 */
+	maxDrawdownStopPercent?: number;
+	/**
+	 * Max portfolio heat: total open risk (sum of qty × |entry − stop| across open
+	 * positions, including the candidate) may not exceed this percent of current
+	 * equity. Entries with no stop are not constrained. `undefined` = off. In (0, 100].
+	 */
+	maxPortfolioHeatPercent?: number;
 }
 
 // ---------------------------------------------------------------------------

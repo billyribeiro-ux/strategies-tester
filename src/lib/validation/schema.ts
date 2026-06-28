@@ -99,7 +99,12 @@ const positionSizingSchema = z.discriminatedUnion('mode', [
 	z.object({ mode: z.literal('fixedShares'), shares: z.number().positive() }),
 	z.object({ mode: z.literal('fixedNotional'), notional: z.number().positive() }),
 	z.object({ mode: z.literal('percentEquity'), percent: z.number().positive() }),
-	z.object({ mode: z.literal('riskBased'), riskPercent: z.number().positive() })
+	z.object({ mode: z.literal('riskBased'), riskPercent: z.number().positive() }),
+	z.object({
+		mode: z.literal('volatilityTarget'),
+		targetVolPercent: z.number().positive(),
+		atrRef: z.string().min(1)
+	})
 ]);
 
 const stopLossSchema = z.discriminatedUnion('mode', [
@@ -144,7 +149,10 @@ const riskSchema = z.object({
 	maxConcurrentPositions: z.number().int().min(1),
 	pyramiding: z.number().int().min(0),
 	commission: commissionSchema,
-	slippage: slippageSchema
+	slippage: slippageSchema,
+	maxBarsInTrade: z.number().int().positive().optional(),
+	maxDrawdownStopPercent: z.number().gt(0).max(100).optional(),
+	maxPortfolioHeatPercent: z.number().gt(0).max(100).optional()
 });
 
 const executionSchema = z.object({

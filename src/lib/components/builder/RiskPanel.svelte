@@ -33,6 +33,7 @@
 	const sizingModeOptions = [
 		{ value: 'percentEquity', label: '% of equity' },
 		{ value: 'riskBased', label: 'Risk-based (% per trade)' },
+		{ value: 'volatilityTarget', label: 'Volatility target (ATR)' },
 		{ value: 'fixedShares', label: 'Fixed shares' },
 		{ value: 'fixedNotional', label: 'Fixed notional' }
 	];
@@ -44,6 +45,9 @@
 				break;
 			case 'riskBased':
 				store.setSizing({ mode, riskPercent: 1 });
+				break;
+			case 'volatilityTarget':
+				store.setSizing({ mode, targetVolPercent: 1, atrRef: atrOptions[0]?.value ?? '' });
 				break;
 			case 'fixedShares':
 				store.setSizing({ mode, shares: 100 });
@@ -224,6 +228,40 @@
 					step={1}
 					bind:value={() => risk.pyramiding, (v) => store.setPyramiding(Math.max(0, Math.round(v)))}
 				/>
+				<NumberInput
+					label="Max bars in trade"
+					hint="Time exit, 0 = no limit"
+					min={0}
+					step={1}
+					bind:value={
+						() => risk.maxBarsInTrade ?? 0,
+						(v) => store.setMaxBarsInTrade(v > 0 ? Math.round(v) : undefined)
+					}
+				/>
+				<NumberInput
+					label="Max drawdown stop"
+					suffix="%"
+					hint="Halt new entries past this drawdown, 0 = off"
+					min={0}
+					max={100}
+					step={1}
+					bind:value={
+						() => risk.maxDrawdownStopPercent ?? 0,
+						(v) => store.setMaxDrawdownStopPercent(v > 0 ? v : undefined)
+					}
+				/>
+				<NumberInput
+					label="Max portfolio heat"
+					suffix="%"
+					hint="Cap on total open risk, 0 = off"
+					min={0}
+					max={100}
+					step={1}
+					bind:value={
+						() => risk.maxPortfolioHeatPercent ?? 0,
+						(v) => store.setMaxPortfolioHeatPercent(v > 0 ? v : undefined)
+					}
+				/>
 			</div>
 		</section>
 
@@ -262,6 +300,51 @@
 							(v) => store.setSizing({ mode: 'riskBased', riskPercent: v })
 						}
 					/>
+				{:else if risk.positionSizing.mode === 'volatilityTarget'}
+					{#if hasAtr}
+						<NumberInput
+							label="Target volatility"
+							suffix="%"
+							hint="Equity % budgeted per ATR of risk"
+							min={0}
+							step={0.1}
+							bind:value={
+								() =>
+									risk.positionSizing.mode === 'volatilityTarget'
+										? risk.positionSizing.targetVolPercent
+										: 0,
+								(v) =>
+									store.setSizing({
+										mode: 'volatilityTarget',
+										targetVolPercent: v,
+										atrRef:
+											risk.positionSizing.mode === 'volatilityTarget'
+												? risk.positionSizing.atrRef
+												: (atrOptions[0]?.value ?? '')
+									})
+							}
+						/>
+						<Select
+							label="ATR indicator"
+							options={atrOptions}
+							placeholder="Select ATR"
+							bind:value={
+								() =>
+									risk.positionSizing.mode === 'volatilityTarget' ? risk.positionSizing.atrRef : '',
+								(v) =>
+									store.setSizing({
+										mode: 'volatilityTarget',
+										atrRef: v,
+										targetVolPercent:
+											risk.positionSizing.mode === 'volatilityTarget'
+												? risk.positionSizing.targetVolPercent
+												: 1
+									})
+							}
+						/>
+					{:else}
+						<Callout tone="warning">Add an ATR indicator to use volatility-target sizing.</Callout>
+					{/if}
 				{:else if risk.positionSizing.mode === 'fixedShares'}
 					<NumberInput
 						label="Shares"

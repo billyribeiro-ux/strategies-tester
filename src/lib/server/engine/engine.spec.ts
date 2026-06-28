@@ -9,6 +9,7 @@ import type {
 	StrategySpec
 } from '$lib/types';
 import { runBacktest } from './engine';
+import { trueRange, wilderSmooth } from './series';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -426,5 +427,202 @@ describe('runBacktest — liquidity cap (§2.3)', () => {
 
 		expect(result.trades.length).toBe(0);
 		expect(result.warnings.some((w) => /Liquidity cap limited fill size/.test(w))).toBe(true);
+	});
+});
+
+describe('runBacktest — volatilityTarget sizing (§5)', () => {
+	it('sizes shares from floor((equity * targetVol/100) / atrValue)', () => {
+		// ATR period 3 over a monotonically rising series settles at a known value.
+		// We assert the engine sized exactly floor(volBudget / atrAtEntry).
+		const spec = baseSpec({
+			indicators: [{ id: 'atr1', type: 'atr', params: { period: 3 }, priceSource: 'close' }],
+			risk: {
+				...baseSpec().risk,
+				initialCapital: 100_000,
+				positionSizing: { mode: 'volatilityTarget', targetVolPercent: 1, atrRef: 'atr1' }
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 108, 104, 102, 100]) };
+		const result = runBacktest(spec, data);
+
+		expect(result.trades.length).toBe(1);
+		const t = result.trades[0];
+		// Entry fills at open of idx 4 (crossover at idx 3). Derive the engine's ATR
+		// at idx 4 using the SAME series helpers the indicator uses, so the expected
+		// qty cannot drift from the engine's own ATR computation.
+		const bars = candles([100, 102, 104, 106, 108, 104, 102, 100]);
+		const atrSeries = wilderSmooth(trueRange(bars), 3);
+		const atrAtEntry = atrSeries[4];
+		const expectedQty = Math.floor((100_000 * (1 / 100)) / atrAtEntry);
+		expect(Number.isFinite(atrAtEntry)).toBe(true);
+		expect(t.qty).toBe(expectedQty);
+		expect(t.qty).toBeGreaterThan(0);
+	});
+
+	it('sizes 0 (no trade) when the ATR ref is non-finite/unavailable', () => {
+		// No ATR indicator declared → atrValue is NaN → size 0 → no trade.
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'volatilityTarget', targetVolPercent: 1, atrRef: 'missing' }
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: emptyGroup(),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 108]) };
+		const result = runBacktest(spec, data);
+		expect(result.trades.length).toBe(0);
+	});
+});
+
+describe('runBacktest — time exit / maxBarsInTrade (§5)', () => {
+	it('forces an exit after N bars, filling at the next bar open', () => {
+		// Enter long (crossover at idx 3 → fill open idx 4). No signal exit, so the
+		// time exit must close it. maxBarsInTrade=2: bars-held reaches 2 at idx 6,
+		// which fills at the open of idx 7.
+		const spec = baseSpec({
+			risk: { ...baseSpec().risk, maxBarsInTrade: 2 },
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: emptyGroup(),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		// closes idx0..7; open of idx7 = close of idx6 = 112 (see candles()).
+		const data = { TEST: candles([100, 102, 104, 106, 108, 110, 112, 114]) };
+		const result = runBacktest(spec, data);
+
+		expect(result.trades.length).toBe(1);
+		const t = result.trades[0];
+		expect(t.entryPrice).toBe(106); // open of idx 4
+		expect(t.barsHeld).toBe(3); // exit idx 7 - entry idx 4
+		expect(t.exitTime).toBe(data.TEST[7].t);
+		expect(t.exitPrice).toBe(data.TEST[7].o); // next-open fill
+		expect(t.exitReason).toBe('signalExit'); // reused reason (result.ts not edited)
+	});
+
+	it('does not force an exit when maxBarsInTrade is undefined', () => {
+		const spec = baseSpec({
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: emptyGroup(),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 108, 110, 112, 114]) };
+		const result = runBacktest(spec, data);
+		// Only closes at end of data, never a mid-run time exit.
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].exitReason).toBe('endOfData');
+	});
+});
+
+describe('runBacktest — drawdown circuit-breaker (§5)', () => {
+	it('halts new entries after equity falls past the drawdown limit', () => {
+		// A losing long opens, drops hard (tripping the breaker), then a later
+		// crossover that WOULD re-enter is suppressed → only one trade.
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				initialCapital: 10_000,
+				positionSizing: { mode: 'percentEquity', percent: 100 },
+				maxDrawdownStopPercent: 5
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		// First crossover ~idx3 (fill idx4 @106), big drop, crossunder exits at a loss
+		// big enough to exceed 5% DD. Then price crosses 105 again later.
+		const data = { TEST: candles([100, 102, 104, 106, 90, 80, 102, 104, 106, 108, 104]) };
+		const result = runBacktest(spec, data);
+
+		expect(result.trades.length).toBe(1);
+		expect(result.warnings.some((w) => /circuit-breaker tripped/i.test(w))).toBe(true);
+	});
+
+	it('does not halt entries when the limit is not reached', () => {
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				maxDrawdownStopPercent: 90 // effectively unreachable here
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 104, 102, 106, 108, 104]) };
+		const result = runBacktest(spec, data);
+		expect(result.trades.length).toBeGreaterThanOrEqual(2);
+		expect(result.warnings.some((w) => /circuit-breaker/i.test(w))).toBe(false);
+	});
+});
+
+describe('runBacktest — portfolio heat cap (§5)', () => {
+	it('blocks an over-risked entry and warns', () => {
+		// percentEquity 100% + a 50% stop ⇒ open risk ≈ 50% of equity per position.
+		// heat cap of 10% is far below that, so the entry is blocked → no trade.
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				initialCapital: 10_000,
+				positionSizing: { mode: 'percentEquity', percent: 100 },
+				stopLoss: { mode: 'percent', percent: 50 },
+				maxPortfolioHeatPercent: 10
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: emptyGroup(),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 108]) };
+		const result = runBacktest(spec, data);
+
+		expect(result.trades.length).toBe(0);
+		expect(result.warnings.some((w) => /heat cap blocked/i.test(w))).toBe(true);
+	});
+
+	it('allows an entry whose risk fits within the heat budget', () => {
+		// Small stop (2%) → open risk ≈ 2% of equity, under a 25% heat cap → trades.
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				initialCapital: 100_000,
+				positionSizing: { mode: 'percentEquity', percent: 100 },
+				stopLoss: { mode: 'percent', percent: 2 },
+				maxPortfolioHeatPercent: 25
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: emptyGroup(),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		const data = { TEST: candles([100, 102, 104, 106, 108]) };
+		const result = runBacktest(spec, data);
+
+		expect(result.trades.length).toBe(1);
+		expect(result.warnings.some((w) => /heat cap/i.test(w))).toBe(false);
 	});
 });

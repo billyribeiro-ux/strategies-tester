@@ -152,6 +152,13 @@ export class StrategyStore {
 		// Null out risk ATR refs that pointed at the removed indicator so the spec
 		// stays a valid union; dangling operand refs are surfaced by validation.
 		const r = this.spec.risk;
+		if (r.positionSizing.mode === 'volatilityTarget' && r.positionSizing.atrRef === id) {
+			this.spec.risk.positionSizing = {
+				mode: 'volatilityTarget',
+				atrRef: '',
+				targetVolPercent: r.positionSizing.targetVolPercent
+			};
+		}
 		if (r.stopLoss.mode === 'atr' && r.stopLoss.atrRef === id) {
 			this.spec.risk.stopLoss = { mode: 'atr', atrRef: '', multiple: r.stopLoss.multiple };
 		}
@@ -308,6 +315,27 @@ export class StrategyStore {
 
 	setSizing = (sizing: PositionSizing) => {
 		this.spec.risk.positionSizing = sizing;
+		this.markDirty();
+	};
+
+	/** Time exit: force-close after N bars. Non-positive/NaN clears it (undefined). */
+	setMaxBarsInTrade = (bars: number | undefined) => {
+		this.spec.risk.maxBarsInTrade =
+			typeof bars === 'number' && Number.isFinite(bars) && bars > 0 ? Math.floor(bars) : undefined;
+		this.markDirty();
+	};
+
+	/** Drawdown circuit-breaker percent. Out-of-range/NaN clears it (undefined). */
+	setMaxDrawdownStopPercent = (pct: number | undefined) => {
+		this.spec.risk.maxDrawdownStopPercent =
+			typeof pct === 'number' && Number.isFinite(pct) && pct > 0 && pct <= 100 ? pct : undefined;
+		this.markDirty();
+	};
+
+	/** Max portfolio heat percent. Out-of-range/NaN clears it (undefined). */
+	setMaxPortfolioHeatPercent = (pct: number | undefined) => {
+		this.spec.risk.maxPortfolioHeatPercent =
+			typeof pct === 'number' && Number.isFinite(pct) && pct > 0 && pct <= 100 ? pct : undefined;
 		this.markDirty();
 	};
 

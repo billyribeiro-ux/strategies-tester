@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { ComponentProps } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import {
 		ArrowLeft,
@@ -7,7 +8,8 @@
 		ChartBar,
 		CalendarBlank,
 		Table,
-		ShieldCheck
+		ShieldCheck,
+		ChartPolar
 	} from 'phosphor-svelte';
 	import type { Trade, ValidationReport } from '$lib/types';
 	import { Panel, Callout, ErrorState, EmptyState, Button } from '$lib/components/ui';
@@ -16,6 +18,7 @@
 	import { formatDateTime } from '$lib/utils/format';
 
 	import SummaryCards from '$lib/components/results/SummaryCards.svelte';
+	import AnalyticsPanel from '$lib/components/results/AnalyticsPanel.svelte';
 	import TradeTable from '$lib/components/results/TradeTable.svelte';
 	import ResultsToolbar from '$lib/components/results/ResultsToolbar.svelte';
 	import PriceChartPanel from '$lib/components/results/PriceChartPanel.svelte';
@@ -56,6 +59,45 @@
 			valError = e instanceof ApiError ? e.message : 'Validation failed.';
 		} finally {
 			validating = false;
+		}
+	}
+
+	// Performance analytics (spec §7) for this run — loaded on demand from
+	// /api/analytics. We call fetch directly (not the api client) and parse the
+	// body as text → JSON to dodge the SSR content-type header restriction.
+	type AnalyticsView = ComponentProps<typeof AnalyticsPanel>['analytics'];
+	let analyticsLoading = $state(false);
+	let analyticsError = $state<string | null>(null);
+	let analytics = $state<AnalyticsView>(null);
+
+	async function loadAnalytics() {
+		if (!result) return;
+		analyticsError = null;
+		analyticsLoading = true;
+		analytics = null;
+		try {
+			const res = await fetch(`/api/analytics?runId=${encodeURIComponent(result.runId)}`);
+			const text = await res.text().catch(() => '');
+			let payload: unknown = text.length ? text : undefined;
+			if (text.length) {
+				try {
+					payload = JSON.parse(text);
+				} catch {
+					payload = text;
+				}
+			}
+			if (!res.ok) {
+				const message =
+					payload && typeof payload === 'object' && 'message' in payload
+						? String((payload as { message: unknown }).message)
+						: `Request failed (${res.status})`;
+				throw new Error(message);
+			}
+			analytics = payload as AnalyticsView;
+		} catch (e) {
+			analyticsError = e instanceof Error ? e.message : 'Analytics failed.';
+		} finally {
+			analyticsLoading = false;
 		}
 	}
 
@@ -166,6 +208,26 @@
 			{/if}
 			{#if validating || validation}
 				<ValidationPanel report={validation} loading={validating} />
+			{/if}
+		</Panel>
+
+		<Panel title="Performance analytics">
+			{#snippet icon()}<ChartPolar size={18} />{/snippet}
+			{#if !analytics && !analyticsLoading && !analyticsError}
+				<div class="validate-cta">
+					<p>
+						Tail risk and drawdown shape: CVaR, ulcer index, Calmar, Omega, time underwater and
+						losing-streak length, with attribution by symbol, side and exit reason plus per-year
+						returns.
+					</p>
+					<Button variant="primary" onclick={loadAnalytics}>
+						{#snippet icon()}<ChartPolar size={16} />{/snippet}
+						Load analytics
+					</Button>
+				</div>
+			{/if}
+			{#if analyticsLoading || analytics || analyticsError}
+				<AnalyticsPanel {analytics} loading={analyticsLoading} error={analyticsError} />
 			{/if}
 		</Panel>
 

@@ -148,12 +148,17 @@ function commissionFor(qty: number, price: number, spec: StrategySpec): number {
 // Sizing
 // ---------------------------------------------------------------------------
 
-/** Shares to trade for a new entry given current equity and fill price. */
+/**
+ * Shares to trade for a new entry given current equity and fill price.
+ * `atrValue` is the referenced ATR series value at the fill bar (NaN when the
+ * sizing mode does not reference an ATR), used only by `volatilityTarget`.
+ */
 function sizePosition(
 	spec: StrategySpec,
 	equity: number,
 	fillPrice: number,
-	stopPrice: number | null
+	stopPrice: number | null,
+	atrValue: number
 ): number {
 	const sizing = spec.risk.positionSizing;
 	if (fillPrice <= 0) return 0;
@@ -170,6 +175,14 @@ function sizePosition(
 			if (riskPerShare <= 0) return 0;
 			const riskCapital = equity * (sizing.riskPercent / 100);
 			return Math.max(0, Math.floor(riskCapital / riskPerShare));
+		}
+		case 'volatilityTarget': {
+			// shares ≈ floor((equity * targetVolPercent/100) / atrValue): scale exposure
+			// inversely to per-bar volatility so each position carries a similar
+			// volatility budget. Non-finite/≤0 ATR → size 0 (cannot size safely).
+			if (!Number.isFinite(atrValue) || atrValue <= 0) return 0;
+			const volBudget = equity * (sizing.targetVolPercent / 100);
+			return Math.max(0, Math.floor(volBudget / atrValue));
 		}
 		default:
 			return assertNever(sizing, 'Unknown sizing mode');
@@ -252,20 +265,34 @@ function trailDistance(spec: StrategySpec, refPrice: number, atrAtEntry: number)
 	}
 }
 
-/** Resolve the ATR value at a bar for the ATR ref used by any risk mode. */
+/** Read a single ATR ref's series value at a bar (NaN if missing/non-finite). */
+function atrRefAtBar(td: TickerData, ref: string, barIndex: number): number {
+	const series = td.ctx.indicators[ref]?.value;
+	if (series && barIndex >= 0 && barIndex < series.length) {
+		const v = series[barIndex];
+		if (Number.isFinite(v)) return v;
+	}
+	return NaN;
+}
+
+/** Resolve the ATR value at a bar for the ATR ref used by any stop/target/trail. */
 function atrAtBar(spec: StrategySpec, td: TickerData, barIndex: number): number {
 	const refs = new Set<string>();
 	if (spec.risk.stopLoss.mode === 'atr') refs.add(spec.risk.stopLoss.atrRef);
 	if (spec.risk.takeProfit.mode === 'atr') refs.add(spec.risk.takeProfit.atrRef);
 	if (spec.risk.trailingStop.mode === 'atr') refs.add(spec.risk.trailingStop.atrRef);
 	for (const ref of refs) {
-		const series = td.ctx.indicators[ref]?.value;
-		if (series && barIndex >= 0 && barIndex < series.length) {
-			const v = series[barIndex];
-			if (Number.isFinite(v)) return v;
-		}
+		const v = atrRefAtBar(td, ref, barIndex);
+		if (Number.isFinite(v)) return v;
 	}
 	return NaN;
+}
+
+/** Resolve the ATR value at a bar for the volatilityTarget sizing ref (else NaN). */
+function sizingAtrAtBar(spec: StrategySpec, td: TickerData, barIndex: number): number {
+	const sizing = spec.risk.positionSizing;
+	if (sizing.mode !== 'volatilityTarget') return NaN;
+	return atrRefAtBar(td, sizing.atrRef, barIndex);
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +354,23 @@ export function runBacktest(
 	}
 	const maxPositions = spec.risk.maxConcurrentPositions;
 	const pyramiding = spec.risk.pyramiding;
+
+	// §5 Time exit: force-close a position once held this many bars (next-open fill).
+	const rawMaxBars = spec.risk.maxBarsInTrade;
+	const maxBarsInTrade =
+		typeof rawMaxBars === 'number' && rawMaxBars > 0 ? Math.floor(rawMaxBars) : null;
+
+	// §5 Portfolio drawdown circuit-breaker: once equity is this far below its peak,
+	// halt ALL new entries for the rest of the run. Managed exits still proceed.
+	const rawDdStop = spec.risk.maxDrawdownStopPercent;
+	const ddStopPct = typeof rawDdStop === 'number' && rawDdStop > 0 ? rawDdStop : null;
+	let peakEquity = initialCapital;
+	let entriesHalted = false;
+
+	// §5 Portfolio heat cap: total open risk may not exceed this % of equity.
+	const rawHeat = spec.risk.maxPortfolioHeatPercent;
+	const heatCapPct = typeof rawHeat === 'number' && rawHeat > 0 ? rawHeat : null;
+	let heatCapBlocks = 0;
 
 	// §2.3 Liquidity cap: limit a single fill to a share of the fill bar's volume.
 	// undefined/<=0 disables the cap. We warn ONCE per run if it ever bites.
@@ -413,7 +457,36 @@ export function runBacktest(
 			openPositions.push(...survivors);
 		}
 
-		// --- 2. Signal-based exits at the close of this bar.
+		// --- 2. Time exits: a position held >= maxBarsInTrade is force-closed at the
+		// NEXT bar's open (same look-ahead-safe path as a signal exit). The decision
+		// uses only bars <= idx (the elapsed bar count), so it is leak-free. Reuses
+		// the 'signalExit' reason — result.ts owns the ExitReason union and is not
+		// edited here, so a dedicated 'timeExit' reason is not introduced.
+		if (maxBarsInTrade !== null) {
+			for (const td of tickers) {
+				const idx = td.indexByTime.get(timeMs);
+				if (idx === undefined) continue;
+				const survivors: OpenPosition[] = [];
+				for (const pos of openPositions) {
+					if (pos.ticker !== td.ticker) {
+						survivors.push(pos);
+						continue;
+					}
+					const barsHeld = idx - pos.entryBarIndex;
+					if (barsHeld >= maxBarsInTrade) {
+						const fill = resolveFill(td, idx);
+						if (fill) closePosition(pos, fill.price, fill.time, fill.barIndex, 'signalExit');
+						else survivors.push(pos); // no next bar to fill on; carry to end-of-data
+					} else {
+						survivors.push(pos);
+					}
+				}
+				openPositions.length = 0;
+				openPositions.push(...survivors);
+			}
+		}
+
+		// --- 3. Signal-based exits at the close of this bar.
 		for (const td of tickers) {
 			const idx = td.indexByTime.get(timeMs);
 			if (idx === undefined) continue;
@@ -437,21 +510,41 @@ export function runBacktest(
 			openPositions.push(...survivors);
 		}
 
-		// --- 3. Entries at the close of this bar (long then short, deterministic order).
-		for (const td of tickers) {
-			const idx = td.indexByTime.get(timeMs);
-			if (idx === undefined) continue;
-			tryEntries(td, idx, 'long');
-			tryEntries(td, idx, 'short');
+		// --- 4. Entries at the close of this bar (long then short, deterministic order).
+		// Skipped entirely once the drawdown circuit-breaker has tripped.
+		if (!entriesHalted) {
+			for (const td of tickers) {
+				const idx = td.indexByTime.get(timeMs);
+				if (idx === undefined) continue;
+				tryEntries(td, idx, 'long');
+				tryEntries(td, idx, 'short');
+			}
 		}
 
-		// --- 4. Mark to market and record equity for this timeline bar.
+		// --- 5. Mark to market and record equity for this timeline bar.
 		const equity = markEquity(timeMs);
 		equityCurve.push({ t: new Date(timeMs).toISOString(), equity });
 		if (openPositions.length > 0) barsInMarket++;
+
+		// §5 Drawdown circuit-breaker: track the running equity peak and, once marked
+		// equity is >= ddStopPct below it, halt all new entries for the rest of the
+		// run. Open positions continue to be managed/exited normally. Warn once.
+		if (Number.isFinite(equity)) {
+			if (equity > peakEquity) peakEquity = equity;
+			if (ddStopPct !== null && !entriesHalted && peakEquity > 0) {
+				const ddPct = ((peakEquity - equity) / peakEquity) * 100;
+				if (ddPct >= ddStopPct) {
+					entriesHalted = true;
+					warnings.push(
+						`Drawdown circuit-breaker tripped: equity fell ${ddPct.toFixed(2)}% from peak ` +
+							`(limit ${ddStopPct}%). New entries halted for the rest of the run.`
+					);
+				}
+			}
+		}
 	}
 
-	// --- 5. End of data: close everything at each ticker's last close.
+	// --- 6. End of data: close everything at each ticker's last close.
 	for (const pos of [...openPositions]) {
 		const td = tickerByName.get(pos.ticker);
 		if (!td) continue;
@@ -488,6 +581,10 @@ export function runBacktest(
 
 	if (liquidityCapHits > 0) {
 		warnings.push(`Liquidity cap limited fill size on ${liquidityCapHits} orders.`);
+	}
+
+	if (heatCapBlocks > 0) {
+		warnings.push(`Portfolio heat cap blocked ${heatCapBlocks} entries.`);
 	}
 
 	const computedAt = new Date().toISOString();
@@ -624,6 +721,38 @@ export function runBacktest(
 		}
 	}
 
+	/** Open risk of a position = qty × |entry − stop|; 0 when it has no stop. */
+	function positionRisk(qty: number, entryPrice: number, stopPrice: number | null): number {
+		if (stopPrice === null) return 0;
+		const perShare = Math.abs(entryPrice - stopPrice);
+		return Number.isFinite(perShare) ? qty * perShare : 0;
+	}
+
+	/**
+	 * §5 Portfolio heat cap. Returns true if adding a candidate position of
+	 * `qty` shares (entry `fillPrice`, stop `stopPrice`) would push the summed open
+	 * risk of all positions over heatCapPct% of `equity`. Candidates with no stop
+	 * contribute no risk and are never blocked. Counts a block when it bites.
+	 */
+	function exceedsHeatCap(
+		qty: number,
+		fillPrice: number,
+		stopPrice: number | null,
+		equity: number
+	): boolean {
+		if (heatCapPct === null || stopPrice === null) return false;
+		const candidateRisk = positionRisk(qty, fillPrice, stopPrice);
+		if (candidateRisk <= 0) return false;
+		let openRisk = 0;
+		for (const p of openPositions) openRisk += positionRisk(p.qty, p.entryPrice, p.stopPrice);
+		const budget = equity * (heatCapPct / 100);
+		if (openRisk + candidateRisk > budget) {
+			heatCapBlocks++;
+			return true;
+		}
+		return false;
+	}
+
 	function tryEntries(td: TickerData, idx: number, side: TradeSide) {
 		const entryGroup = side === 'long' ? spec.rules.longEntry : spec.rules.shortEntry;
 		if (!evaluateGroup(entryGroup, td.ctx, idx)) return;
@@ -651,7 +780,11 @@ export function runBacktest(
 		const provisionalStop = computeStopPrice(spec, side, fillPrice, atrAtEntry);
 		// Size from marked-to-market equity at the fill bar (cash + open positions).
 		const equity = markEquity(Date.parse(td.candles[fill.barIndex].t));
-		const desiredQty = sizePosition(spec, equity, fillPrice, provisionalStop);
+		const sizingAtr = sizingAtrAtBar(spec, td, fill.barIndex);
+		const desiredQty = sizePosition(spec, equity, fillPrice, provisionalStop, sizingAtr);
+		// §5 Portfolio heat cap: skip the entry if it would push total open risk
+		// (qty × |entry − stop| across open positions + this one) over the limit.
+		if (desiredQty > 0 && exceedsHeatCap(desiredQty, fillPrice, provisionalStop, equity)) return;
 		// §2.3 Liquidity cap: never fill more than the allowed share of bar volume.
 		const qty = applyLiquidityCap(desiredQty, td, fill.barIndex);
 		if (qty <= 0) return;
@@ -692,7 +825,8 @@ export function runBacktest(
 		const fillPrice = applySlippage(fill.price, side, true, spec);
 		if (!(fillPrice > 0)) return;
 		const equity = markEquity(Date.parse(td.candles[fill.barIndex].t));
-		const desiredAddQty = sizePosition(spec, equity, fillPrice, pos.stopPrice);
+		const sizingAtr = sizingAtrAtBar(spec, td, fill.barIndex);
+		const desiredAddQty = sizePosition(spec, equity, fillPrice, pos.stopPrice, sizingAtr);
 		// §2.3 Liquidity cap also constrains pyramided adds.
 		const addQty = applyLiquidityCap(desiredAddQty, td, fill.barIndex);
 		if (addQty <= 0) return;
