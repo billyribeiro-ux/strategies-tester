@@ -2,6 +2,8 @@
 	import type {
 		CommissionModel,
 		PositionSizing,
+		ScaleOutLevel,
+		ScaleOutTrigger,
 		SlippageModel,
 		StopLoss,
 		TakeProfit,
@@ -10,8 +12,8 @@
 	import { assertNever } from '$lib/utils/assert-never';
 	import { indicatorLabel } from '$lib/spec/defaults';
 	import type { StrategyStore } from '$lib/stores/strategy.svelte';
-	import { Callout, NumberInput, Panel, Select } from '$lib/components/ui';
-	import { Shield } from 'phosphor-svelte';
+	import { Button, Callout, IconButton, NumberInput, Panel, Select } from '$lib/components/ui';
+	import { Plus, Shield, Trash } from 'phosphor-svelte';
 
 	interface Props {
 		store: StrategyStore;
@@ -143,6 +145,60 @@
 				assertNever(mode);
 		}
 	}
+
+	// --- scale-out / partial profit (§4c) -----------------------------------
+
+	const scaleOutLevels = $derived(risk.scaleOut?.levels ?? []);
+
+	const scaleOutTriggerOptions = [
+		{ value: 'percent', label: '% profit' },
+		{ value: 'rMultiple', label: 'R multiple' }
+	];
+
+	/** Running sum of fractions, for the "leftover runner" hint. */
+	const scaleOutFractionSum = $derived(scaleOutLevels.reduce((acc, l) => acc + l.fraction, 0));
+
+	function commitScaleOut(levels: ScaleOutLevel[]) {
+		store.setScaleOut(levels.length > 0 ? { levels } : undefined);
+	}
+
+	function addScaleOutLevel() {
+		commitScaleOut([
+			...scaleOutLevels,
+			{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.5 }
+		]);
+	}
+
+	function removeScaleOutLevel(index: number) {
+		commitScaleOut(scaleOutLevels.filter((_, i) => i !== index));
+	}
+
+	function setScaleOutTriggerKind(index: number, kind: ScaleOutTrigger['kind']) {
+		const trigger: ScaleOutTrigger =
+			kind === 'rMultiple' ? { kind: 'rMultiple', r: 2 } : { kind: 'percent', percent: 5 };
+		commitScaleOut(scaleOutLevels.map((l, i) => (i === index ? { ...l, trigger } : l)));
+	}
+
+	function setScaleOutTriggerValue(index: number, value: number) {
+		commitScaleOut(
+			scaleOutLevels.map((l, i) => {
+				if (i !== index) return l;
+				const trigger: ScaleOutTrigger =
+					l.trigger.kind === 'rMultiple'
+						? { kind: 'rMultiple', r: value }
+						: { kind: 'percent', percent: value };
+				return { ...l, trigger };
+			})
+		);
+	}
+
+	function setScaleOutFraction(index: number, fraction: number) {
+		commitScaleOut(scaleOutLevels.map((l, i) => (i === index ? { ...l, fraction } : l)));
+	}
+
+	const scaleOutNeedsStop = $derived(
+		scaleOutLevels.some((l) => l.trigger.kind === 'rMultiple') && risk.stopLoss.mode === 'none'
+	);
 
 	// --- commission ---------------------------------------------------------
 
@@ -593,6 +649,91 @@
 			</div>
 		</section>
 
+		<!-- Scale-out / partial profit -->
+		<section class="block">
+			<h3>Scale-out (partial profit)</h3>
+			{#if scaleOutLevels.length === 0}
+				<p class="muted">
+					Take partial profits at one or more targets, leaving a runner managed by your stop /
+					target / trailing logic.
+				</p>
+			{:else}
+				<div class="levels">
+					{#each scaleOutLevels as level, i (i)}
+						<div class="level">
+							<Select
+								label="Trigger"
+								options={scaleOutTriggerOptions}
+								bind:value={
+									() => level.trigger.kind,
+									(v) => setScaleOutTriggerKind(i, v as ScaleOutTrigger['kind'])
+								}
+							/>
+							{#if level.trigger.kind === 'rMultiple'}
+								<NumberInput
+									label="Reward"
+									suffix="R"
+									min={0}
+									step={0.1}
+									bind:value={
+										() => (level.trigger.kind === 'rMultiple' ? level.trigger.r : 0),
+										(v) => setScaleOutTriggerValue(i, v)
+									}
+								/>
+							{:else}
+								<NumberInput
+									label="Profit"
+									suffix="%"
+									min={0}
+									step={0.1}
+									bind:value={
+										() => (level.trigger.kind === 'percent' ? level.trigger.percent : 0),
+										(v) => setScaleOutTriggerValue(i, v)
+									}
+								/>
+							{/if}
+							<NumberInput
+								label="Close fraction"
+								hint="Of original qty, 0–1"
+								min={0}
+								max={1}
+								step={0.05}
+								bind:value={() => level.fraction, (v) => setScaleOutFraction(i, v)}
+							/>
+							<IconButton
+								label="Remove level"
+								variant="danger"
+								onclick={() => removeScaleOutLevel(i)}
+							>
+								<Trash size={16} />
+							</IconButton>
+						</div>
+					{/each}
+				</div>
+				{#if scaleOutFractionSum > 1}
+					<Callout tone="warning">
+						Fractions sum to {scaleOutFractionSum.toFixed(2)} (&gt; 1) — they cannot exceed the whole
+						position.
+					</Callout>
+				{:else if scaleOutFractionSum === 1}
+					<Callout tone="info">
+						Fractions sum to 1 — the levels fully close the position, leaving no runner.
+					</Callout>
+				{/if}
+				{#if scaleOutNeedsStop}
+					<Callout tone="warning">
+						An R-multiple level needs a stop loss to define R. Add a stop below or use a % trigger.
+					</Callout>
+				{/if}
+			{/if}
+			<div>
+				<Button size="sm" variant="ghost" onclick={addScaleOutLevel}>
+					{#snippet icon()}<Plus size={16} />{/snippet}
+					Add level
+				</Button>
+			</div>
+		</section>
+
 		<!-- Costs -->
 		<section class="block">
 			<h3>Trading costs</h3>
@@ -727,6 +868,22 @@
 		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
 		gap: var(--sp-3);
 		align-items: start;
+	}
+	.muted {
+		font-size: var(--fs-sm);
+		color: var(--c-text-muted);
+		margin: 0;
+	}
+	.levels {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
+	}
+	.level {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(6rem, 1fr)) auto;
+		gap: var(--sp-3);
+		align-items: end;
 	}
 
 	@media (min-width: 64rem) {

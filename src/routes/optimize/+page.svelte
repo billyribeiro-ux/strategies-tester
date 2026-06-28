@@ -80,7 +80,8 @@
 	const searchModeOptions = [
 		{ value: 'grid', label: 'Grid (exhaustive)' },
 		{ value: 'random', label: 'Random search' },
-		{ value: 'genetic', label: 'Genetic search' }
+		{ value: 'genetic', label: 'Genetic search' },
+		{ value: 'bayesian', label: 'Bayesian search' }
 	];
 	let searchMode = $state<OptimizeMode>('grid');
 

@@ -953,6 +953,229 @@ describe('runBacktest — short borrow cost (§ costs)', () => {
 	});
 });
 
+describe('runBacktest — scale-out / partial profit (§4c)', () => {
+	// Long entry: crossover 105 at idx2 (close 104→106), fills at open of idx3.
+	// We hand-build bars so the runner up to known highs hits each scale-out level
+	// on a specific bar, then a final down bar triggers the stop on the runner.
+	// Entry fills at idx3 open = 100. Stop = 2% → 98. Scale-out: 5% (→105) then
+	// 10% (→110) of entry. Levels close 40% then 30% of the 100-share original,
+	// leaving a 30-share runner.
+	const scaleRules = {
+		longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+		longExit: emptyGroup(),
+		shortEntry: emptyGroup(),
+		shortExit: emptyGroup()
+	};
+
+	function scaleSeries(): Candle[] {
+		// idx0/1 stay ≤105; idx2 closes 106 → crossover AT idx2. Entry fills at the
+		// open of idx3, set to 100. Stop = 2% → 98. idx4 high 105 hits L1 (5% → 105),
+		// idx5 high 110 hits L2 (10% → 110), idx6 low 90 hits the runner's 98 stop.
+		return ohlc([
+			[100, 104.5, 99.5, 104], // idx0 close 104 (≤105)
+			[104, 104.5, 103.5, 104], // idx1 close 104 (≤105)
+			[104, 106.5, 103.5, 106], // idx2 close 106 (>105) → crossover
+			[100, 100.5, 99.5, 100], // idx3 entry fill bar, open 100
+			[100, 105.0, 99.8, 104], // idx4 high 105 → L1 (5%) hit
+			[104, 110.0, 103.5, 108], // idx5 high 110 → L2 (10%) hit
+			[108, 108.5, 90.0, 95] // idx6 low 90 → runner stop @98
+		]);
+	}
+
+	it('closes the right fractions at the right prices and leaves a runner that exits', () => {
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'fixedShares', shares: 100 },
+				stopLoss: { mode: 'percent', percent: 2 },
+				scaleOut: {
+					levels: [
+						{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.4 },
+						{ trigger: { kind: 'percent', percent: 10 }, fraction: 0.3 }
+					]
+				}
+			},
+			rules: scaleRules
+		});
+		const result = runBacktest(spec, { TEST: scaleSeries() });
+
+		// Three trade records: two partials + the runner.
+		expect(result.trades.length).toBe(3);
+		const [p1, p2, runner] = result.trades;
+
+		// Original qty 100 → 40 + 30 + 30 = 100.
+		expect(p1.qty).toBe(40);
+		expect(p2.qty).toBe(30);
+		expect(runner.qty).toBe(30);
+		expect(p1.qty + p2.qty + runner.qty).toBe(100);
+
+		// Partials fill at the LEVEL price (entry 100 → +5% = 105, +10% = 110).
+		expect(p1.exitPrice).toBe(105);
+		expect(p1.exitReason).toBe('targetHit');
+		expect(p2.exitPrice).toBe(110);
+		expect(p2.exitReason).toBe('targetHit');
+
+		// Runner is stopped out at the 2% stop (98).
+		expect(runner.exitReason).toBe('stopHit');
+		expect(runner.exitPrice).toBeCloseTo(98, 9);
+
+		// pnl/cash consistency: each partial uses entry geometry (entry 100).
+		expect(p1.pnl).toBeCloseTo((105 - 100) * 40, 9);
+		expect(p2.pnl).toBeCloseTo((110 - 100) * 30, 9);
+		expect(runner.pnl).toBeCloseTo((98 - 100) * 30, 9);
+		// cumulativePnl threads through all three in order.
+		expect(p1.cumulativePnl).toBeCloseTo(p1.pnl, 9);
+		expect(p2.cumulativePnl).toBeCloseTo(p1.pnl + p2.pnl, 9);
+		expect(runner.cumulativePnl).toBeCloseTo(p1.pnl + p2.pnl + runner.pnl, 9);
+	});
+
+	it('processes multiple levels reached in the SAME bar, ascending', () => {
+		// A single bar rips through both the 5% and 10% levels at once.
+		const series = ohlc([
+			[100, 104.5, 99.5, 104], // idx0
+			[104, 104.5, 103.5, 104], // idx1
+			[104, 106.5, 103.5, 106], // idx2 → crossover
+			[100, 100.5, 99.5, 100], // idx3 entry fill bar, open 100
+			[100, 112.0, 99.8, 111], // idx4 high 112 → hits BOTH 105 and 110
+			[111, 111.5, 110.5, 111] // idx5 quiet; runner rides to endOfData
+		]);
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'fixedShares', shares: 100 },
+				stopLoss: { mode: 'percent', percent: 2 },
+				scaleOut: {
+					levels: [
+						{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.4 },
+						{ trigger: { kind: 'percent', percent: 10 }, fraction: 0.3 }
+					]
+				}
+			},
+			rules: scaleRules
+		});
+		const result = runBacktest(spec, { TEST: series });
+		expect(result.trades.length).toBe(3);
+		const [p1, p2, runner] = result.trades;
+		expect(p1.exitPrice).toBe(105);
+		expect(p2.exitPrice).toBe(110);
+		expect(p1.qty).toBe(40);
+		expect(p2.qty).toBe(30);
+		expect(runner.qty).toBe(30);
+		expect(runner.exitReason).toBe('endOfData');
+	});
+
+	it('default (no scaleOut) is unchanged: a single trade closes the whole position', () => {
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'fixedShares', shares: 100 },
+				stopLoss: { mode: 'percent', percent: 2 }
+			},
+			rules: scaleRules
+		});
+		const result = runBacktest(spec, { TEST: scaleSeries() });
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].qty).toBe(100);
+	});
+
+	it('an rMultiple scale-out level fills at the R-target price', () => {
+		// Stop 2% on entry 100 → risk 2/share. 2R level target = 100 + 2*2 = 104,
+		// fraction 0.5 → close 50, runner 50 rides to endOfData.
+		const series = ohlc([
+			[100, 104.5, 99.5, 104], // idx0
+			[104, 104.5, 103.5, 104], // idx1
+			[104, 106.5, 103.5, 106], // idx2 → crossover
+			[100, 100.5, 99.5, 100], // idx3 entry fill bar, open 100
+			[100, 104.0, 99.8, 103], // idx4 high 104 → hits 2R target
+			[103, 103.5, 102.5, 103] // idx5 quiet; runner to endOfData
+		]);
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'fixedShares', shares: 100 },
+				stopLoss: { mode: 'percent', percent: 2 },
+				scaleOut: { levels: [{ trigger: { kind: 'rMultiple', r: 2 }, fraction: 0.5 }] }
+			},
+			rules: scaleRules
+		});
+		const result = runBacktest(spec, { TEST: series });
+		expect(result.trades.length).toBe(2);
+		const [p1, runner] = result.trades;
+		expect(p1.qty).toBe(50);
+		expect(p1.exitPrice).toBeCloseTo(104, 9);
+		expect(p1.exitReason).toBe('targetHit');
+		expect(runner.qty).toBe(50);
+		expect(runner.exitReason).toBe('endOfData');
+	});
+
+	it('stop precedence: a bar hitting both the stop and a level fully exits at the stop', () => {
+		// Entry 100, stop 98 (2%). The bar after entry both reaches the 5% level (105)
+		// and breaks the stop (low 97): the conservative ordering exits the WHOLE
+		// position at the stop and books no partial profit.
+		const series = ohlc([
+			[100, 104.5, 99.5, 104], // idx0
+			[104, 104.5, 103.5, 104], // idx1
+			[104, 106.5, 103.5, 106], // idx2 → crossover
+			[100, 100.5, 99.5, 100], // idx3 entry fill bar
+			[100, 106.0, 97.0, 99] // idx4 high 106 (≥105) AND low 97 (≤98 stop)
+		]);
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'fixedShares', shares: 100 },
+				stopLoss: { mode: 'percent', percent: 2 },
+				scaleOut: { levels: [{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.4 }] }
+			},
+			rules: scaleRules
+		});
+		const result = runBacktest(spec, { TEST: series });
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].qty).toBe(100);
+		expect(result.trades[0].exitReason).toBe('stopHit');
+		expect(result.trades[0].exitPrice).toBeCloseTo(98, 9);
+	});
+
+	it('is leak-free: a scale-out run passes the leak gate', () => {
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'fixedShares', shares: 100 },
+				stopLoss: { mode: 'percent', percent: 2 },
+				scaleOut: {
+					levels: [
+						{ trigger: { kind: 'percent', percent: 3 }, fraction: 0.4 },
+						{ trigger: { kind: 'rMultiple', r: 2 }, fraction: 0.3 }
+					]
+				}
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		expect(() => assertNoLookahead(spec, { TEST: candles(closes) })).not.toThrow();
+	});
+
+	it('determinism holds with scale-out enabled', () => {
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'fixedShares', shares: 100 },
+				stopLoss: { mode: 'percent', percent: 2 },
+				scaleOut: { levels: [{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.4 }] }
+			},
+			rules: scaleRules
+		});
+		const data = { TEST: scaleSeries() };
+		const a = normalize(runBacktest(spec, data));
+		const b = normalize(runBacktest(spec, data));
+		expect(a).toEqual(b);
+	});
+});
+
 describe('runBacktest — multi-timeframe indicator reference (§3 / §4a)', () => {
 	// Hourly base candles, anchored at UTC midnight, so they resample cleanly into
 	// 4h higher-TF buckets (4 hourly bars per HTF bar).

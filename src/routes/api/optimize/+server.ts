@@ -6,10 +6,11 @@
  * returns the results ranked by the chosen metric/objective.
  *
  * Optional `mode` selects the search strategy (default 'grid', back-compatible):
- *   'grid'    — exhaustive sweep via runOptimization (unchanged behavior).
- *   'random'  — seeded random sampling via randomSearch.
- *   'genetic' — seeded genetic algorithm via geneticSearch.
- * All three return an `OptimizationResult`, so the response shape is unchanged.
+ *   'grid'     — exhaustive sweep via runOptimization (unchanged behavior).
+ *   'random'   — seeded random sampling via randomSearch.
+ *   'genetic'  — seeded genetic algorithm via geneticSearch.
+ *   'bayesian' — seeded TPE (SMBO) sampler via bayesianSearch.
+ * All return an `OptimizationResult`, so the response shape is unchanged.
  */
 
 import { error, json } from '@sveltejs/kit';
@@ -19,15 +20,22 @@ import { parseSpec, validateSpec, hasErrors } from '$lib/validation';
 import { CAPABILITIES } from '$lib/capabilities/catalog';
 import { fetchCandles } from '$lib/server/fmp/client';
 import { runOptimization } from '$lib/server/engine/optimize';
-import { randomSearch, geneticSearch, objectives, type Objective } from '$lib/server/engine/search';
+import {
+	randomSearch,
+	geneticSearch,
+	bayesianSearch,
+	objectives,
+	type Objective
+} from '$lib/server/engine/search';
 
-type SearchMode = 'grid' | 'random' | 'genetic';
+type SearchMode = 'grid' | 'random' | 'genetic' | 'bayesian';
 
 /** Sensible search defaults; overridable via `searchOptions` in the request body. */
 const SEARCH_DEFAULTS = {
 	iterations: 50,
 	populationSize: 20,
 	generations: 10,
+	initRandom: 10,
 	seed: 1
 } as const;
 
@@ -135,7 +143,9 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	};
 
 	const searchMode: SearchMode =
-		mode === 'random' || mode === 'genetic' || mode === 'grid' ? mode : 'grid';
+		mode === 'random' || mode === 'genetic' || mode === 'bayesian' || mode === 'grid'
+			? mode
+			: 'grid';
 	const opts =
 		searchOptions && typeof searchOptions === 'object'
 			? (searchOptions as Record<string, unknown>)
@@ -154,6 +164,13 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		result = geneticSearch(optSpec, candlesByTicker, {
 			populationSize: intOpt(opts.populationSize, SEARCH_DEFAULTS.populationSize),
 			generations: intOpt(opts.generations, SEARCH_DEFAULTS.generations),
+			seed,
+			objective
+		});
+	} else if (searchMode === 'bayesian') {
+		result = bayesianSearch(optSpec, candlesByTicker, {
+			iterations: intOpt(opts.iterations, SEARCH_DEFAULTS.iterations),
+			initRandom: intOpt(opts.initRandom, SEARCH_DEFAULTS.initRandom),
 			seed,
 			objective
 		});

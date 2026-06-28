@@ -101,16 +101,18 @@ export interface SettingsStatus {
 }
 
 /** Search strategy for /api/optimize. 'grid' is the exhaustive sweep (default). */
-export type OptimizeMode = 'grid' | 'random' | 'genetic';
+export type OptimizeMode = 'grid' | 'random' | 'genetic' | 'bayesian';
 
-/** Tunables for the 'random' / 'genetic' search modes. Pass a `seed` for determinism. */
+/** Tunables for the 'random' / 'genetic' / 'bayesian' search modes. Pass a `seed` for determinism. */
 export interface OptimizeSearchOptions {
-	/** 'random': number of sampled combinations (default 50). */
+	/** 'random' / 'bayesian': number of evaluated combinations (default 50). */
 	iterations?: number;
 	/** 'genetic': members per generation (default 20). */
 	populationSize?: number;
 	/** 'genetic': number of generations (default 10). */
 	generations?: number;
+	/** 'bayesian': warm-up random evaluations before the TPE model kicks in (default 10). */
+	initRandom?: number;
 	/** Seeded RNG for reproducible results (default 1). */
 	seed?: number;
 	/** Named objective: 'totalReturn' | 'sharpe' | 'oosDeflatedProxy' (default 'totalReturn'). */

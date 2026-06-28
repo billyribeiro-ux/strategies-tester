@@ -282,6 +282,43 @@ export type TrailingStop =
 	| { mode: 'percent'; percent: number }
 	| { mode: 'atr'; atrRef: string; multiple: number };
 
+/**
+ * Trigger for a scale-out level (§4c). A level fires when price reaches a profit
+ * target expressed as either:
+ * - `rMultiple`: `r` units of initial risk in profit (entry ± r × |entry − stop|).
+ *   Requires a non-'none' stopLoss to define R; rejected by validation otherwise.
+ * - `percent`: `percent`% of the entry price in profit (entry ± entry × percent/100).
+ */
+export type ScaleOutTrigger =
+	| { kind: 'rMultiple'; r: number }
+	| { kind: 'percent'; percent: number };
+
+/**
+ * One scale-out level (§4c): when price reaches `trigger`, close `fraction` of
+ * the ORIGINAL position quantity (taken once, at the level price) and let the
+ * rest run. `fraction` is in (0, 1).
+ */
+export interface ScaleOutLevel {
+	trigger: ScaleOutTrigger;
+	/** Fraction of the ORIGINAL position qty closed at this level, in (0, 1). */
+	fraction: number;
+}
+
+/**
+ * Scale-out / partial-profit configuration (§4c). One or more ascending profit
+ * targets, each closing a fraction of the original position; whatever is left
+ * after all levels fire is the "runner", managed by the normal stop / target /
+ * trailing / signal logic. Omitted = no scale-out (today's behaviour).
+ *
+ * Partial closes are checked INTRABAR using only the current bar's OHLC (exactly
+ * like stops/targets — never the future), keeping the engine leak-free. The sum
+ * of all `fraction`s must be ≤ 1; a sum of exactly 1 leaves no runner (the last
+ * level fully closes the position).
+ */
+export interface ScaleOut {
+	levels: ScaleOutLevel[];
+}
+
 export type CommissionModel =
 	| { mode: 'none' }
 	| { mode: 'perShare'; perShare: number }
@@ -299,6 +336,13 @@ export interface Risk {
 	stopLoss: StopLoss;
 	takeProfit: TakeProfit;
 	trailingStop: TrailingStop;
+	/**
+	 * Scale-out / partial-profit lifecycle (§4c). Ascending profit targets, each
+	 * closing a fraction of the ORIGINAL position quantity, leaving a runner the
+	 * normal stop/target/trailing/signal logic manages. `undefined` = no scale-out
+	 * (today's behaviour). Checked intrabar with current-bar OHLC only (leak-free).
+	 */
+	scaleOut?: ScaleOut;
 	maxConcurrentPositions: number;
 	pyramiding: number; // max additional entries per open position (0 = none)
 	commission: CommissionModel;

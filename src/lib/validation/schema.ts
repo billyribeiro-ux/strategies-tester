@@ -177,6 +177,22 @@ const trailingStopSchema = z.discriminatedUnion('mode', [
 	z.object({ mode: z.literal('atr'), atrRef: z.string().min(1), multiple: z.number().positive() })
 ]);
 
+// Scale-out / partial-profit (§4c). Each level's fraction is in (0, 1); the
+// rMultiple-needs-a-stop and sum ≤ 1 rules are semantic and live in validate-spec.ts.
+const scaleOutTriggerSchema = z.discriminatedUnion('kind', [
+	z.object({ kind: z.literal('rMultiple'), r: z.number().positive() }),
+	z.object({ kind: z.literal('percent'), percent: z.number().positive() })
+]);
+
+const scaleOutSchema = z.object({
+	levels: z.array(
+		z.object({
+			trigger: scaleOutTriggerSchema,
+			fraction: z.number().gt(0).lt(1)
+		})
+	)
+});
+
 const commissionSchema = z.discriminatedUnion('mode', [
 	z.object({ mode: z.literal('none') }),
 	z.object({ mode: z.literal('perShare'), perShare: z.number().min(0) }),
@@ -196,6 +212,7 @@ const riskSchema = z.object({
 	stopLoss: stopLossSchema,
 	takeProfit: takeProfitSchema,
 	trailingStop: trailingStopSchema,
+	scaleOut: scaleOutSchema.optional(),
 	maxConcurrentPositions: z.number().int().min(1),
 	pyramiding: z.number().int().min(0),
 	commission: commissionSchema,

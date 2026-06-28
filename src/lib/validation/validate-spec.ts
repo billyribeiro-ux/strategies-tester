@@ -419,6 +419,62 @@ function validateRisk(risk: Risk, ctx: Ctx) {
 		'risk.trailingStop',
 		ctx
 	);
+	validateScaleOut(risk, ctx);
+}
+
+/**
+ * Scale-out / partial-profit coherence (§4c): each fraction in (0, 1); the sum
+ * of all fractions ≤ 1 (a sum of exactly 1 leaves no runner — allowed, warned);
+ * each trigger's r/percent positive; an rMultiple trigger needs a non-'none'
+ * stopLoss to define R.
+ */
+function validateScaleOut(risk: Risk, ctx: Ctx) {
+	const scaleOut = risk.scaleOut;
+	if (!scaleOut) return;
+	if (scaleOut.levels.length === 0) return;
+	let sum = 0;
+	scaleOut.levels.forEach((level, i) => {
+		const base = `risk.scaleOut.levels[${i}]`;
+		if (!(level.fraction > 0 && level.fraction < 1)) {
+			add(
+				ctx,
+				'error',
+				`${base}.fraction`,
+				'Scale-out fraction must be between 0 and 1 (exclusive).'
+			);
+		}
+		sum += level.fraction;
+		if (level.trigger.kind === 'rMultiple') {
+			if (!(level.trigger.r > 0)) {
+				add(ctx, 'error', `${base}.trigger.r`, 'Scale-out R multiple must be greater than 0.');
+			}
+			if (risk.stopLoss.mode === 'none') {
+				add(
+					ctx,
+					'error',
+					`${base}.trigger`,
+					'An R-multiple scale-out level needs a stop loss to define R. Add a stop or use a percent trigger.'
+				);
+			}
+		} else if (!(level.trigger.percent > 0)) {
+			add(ctx, 'error', `${base}.trigger.percent`, 'Scale-out percent must be greater than 0.');
+		}
+	});
+	if (sum > 1 + 1e-9) {
+		add(
+			ctx,
+			'error',
+			'risk.scaleOut',
+			`Scale-out fractions sum to ${sum.toFixed(2)} (> 1). They cannot exceed the whole position.`
+		);
+	} else if (Math.abs(sum - 1) <= 1e-9) {
+		add(
+			ctx,
+			'warning',
+			'risk.scaleOut',
+			'Scale-out fractions sum to 1 — the position is fully closed by the levels, leaving no runner.'
+		);
+	}
 }
 
 function validateAtrRef(ref: string | undefined, path: string, ctx: Ctx) {

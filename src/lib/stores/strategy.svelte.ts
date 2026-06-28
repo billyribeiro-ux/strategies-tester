@@ -27,6 +27,7 @@ import type {
 	RuleNode,
 	RuleSection,
 	SavedStrategy,
+	ScaleOut,
 	SessionSpec,
 	SlippageModel,
 	StopLoss,
@@ -376,6 +377,16 @@ export class StrategyStore {
 
 	setTrailingStop = (ts: TrailingStop) => {
 		this.spec.risk.trailingStop = ts;
+		this.markDirty();
+	};
+
+	/**
+	 * Scale-out / partial-profit levels (§4c). An empty/undefined config clears it
+	 * (no scale-out — today's behaviour); a config with zero levels is normalised
+	 * to undefined so backward-compatible specs stay clean.
+	 */
+	setScaleOut = (scaleOut: ScaleOut | undefined) => {
+		this.spec.risk.scaleOut = scaleOut && scaleOut.levels.length > 0 ? scaleOut : undefined;
 		this.markDirty();
 	};
 

@@ -20,6 +20,7 @@ import type {
 	EquityPoint,
 	ExitReason,
 	IndicatorInstance,
+	ScaleOutTrigger,
 	StrategySpec,
 	Trade,
 	TradeSide
@@ -70,6 +71,18 @@ interface OpenPosition {
 	trailPrice: number | null;
 	/** ATR value captured at entry, for atr-based stop/target/trail sizing. */
 	atrAtEntry: number;
+	/**
+	 * §4c Scale-out: original position quantity at entry, the base for each
+	 * level's fraction. Stays fixed as partial closes reduce `qty` and as adds
+	 * grow it (adds raise this too so fractions track the live original size).
+	 */
+	originalQty: number;
+	/**
+	 * §4c Scale-out: number of ascending scale-out levels already fired for this
+	 * position. Levels are processed in order, so this doubles as a cursor — only
+	 * levels at index >= scaledLevels remain eligible.
+	 */
+	scaledLevels: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +565,11 @@ export function runBacktest(
 				maybeUpdateTrailing(pos, bar, spec);
 			}
 			// Resolve protective exits (intrabar) for this ticker's positions.
+			// Ordering / stop precedence (§4c): the stop/target/trailing check runs
+			// FIRST and fully closes a position when triggered. Only if nothing
+			// protective fires do we take any reached scale-out levels — conservative:
+			// a bar that also hits the stop exits the whole remainder at the stop and
+			// no partial profit is booked. Both steps read only THIS bar's OHLC.
 			const survivors: OpenPosition[] = [];
 			for (const pos of openPositions) {
 				if (pos.ticker !== td.ticker) {
@@ -561,9 +579,11 @@ export function runBacktest(
 				const hit = checkProtectiveExit(pos, bar);
 				if (hit) {
 					closePosition(pos, hit.price, bar.t, idx, hit.reason);
-				} else {
-					survivors.push(pos);
+					continue;
 				}
+				// No protective exit: take any partial-profit levels reached this bar.
+				const fullyScaledOut = applyScaleOut(pos, bar, idx);
+				if (!fullyScaledOut) survivors.push(pos);
 			}
 			openPositions.length = 0;
 			openPositions.push(...survivors);
@@ -990,7 +1010,9 @@ export function runBacktest(
 			highestSinceEntry: fillPrice,
 			lowestSinceEntry: fillPrice,
 			trailPrice: null,
-			atrAtEntry
+			atrAtEntry,
+			originalQty: qty,
+			scaledLevels: 0
 		};
 		// Seed entry-bar excursion with the fill bar's range.
 		const fillBar = td.candles[fill.barIndex];
@@ -1025,47 +1047,59 @@ export function runBacktest(
 		const totalQty = pos.qty + addQty;
 		pos.entryPrice = (pos.entryPrice * pos.qty + fillPrice * addQty) / totalQty;
 		pos.qty = totalQty;
+		// §4c Scale-out: grow the original-qty base by the add so each level's
+		// fraction tracks the live full size (it is the base for round(orig × frac)).
+		pos.originalQty += addQty;
 		pos.adds += 1;
 		// Keep the original stop/target geometry (recompute risk from avg price).
 		if (pos.stopPrice !== null) pos.initialRiskPerShare = Math.abs(pos.entryPrice - pos.stopPrice);
 	}
 
-	function closePosition(
+	/**
+	 * Settle an exit of `qty` shares of `pos` at `rawExitPrice` (pre-slippage),
+	 * pushing one Trade and updating cash / cumulativePnl / Kelly stats. The single
+	 * code path for BOTH full closes and §4c scale-out partial closes; `qty` is the
+	 * number of shares being closed (≤ pos.qty) and the trade's R-multiple and
+	 * MAE/MFE use the position's entry geometry, so a partial inherits the runner's
+	 * stop/risk. Leak-free: only the supplied (current/decided) bar's price is used;
+	 * the caller never passes a future price. Does NOT mutate pos.qty — callers do.
+	 */
+	function settleExit(
 		pos: OpenPosition,
+		qty: number,
 		rawExitPrice: number,
 		exitTime: string,
 		exitBarIndex: number,
 		reason: ExitReason
 	) {
 		const exitPrice = applySlippage(rawExitPrice, pos.side, false, spec);
-		const proceeds = pos.qty * exitPrice;
-		const commission = commissionFor(pos.qty, exitPrice, spec);
+		const proceeds = qty * exitPrice;
+		const commission = commissionFor(qty, exitPrice, spec);
 		// Cash settle: longs receive proceeds - fees; shorts pay to buy back + fees.
 		cash += pos.side === 'long' ? proceeds - commission : -(proceeds + commission);
 
-		// §costs Short borrow: accrue per bar held on the short's entry notional, then
-		// deduct the total from cash and the trade's P&L at close. Longs accrue nothing.
-		// Summed at close (vs per-bar) so it is deterministic and fully reflected here.
+		// §costs Short borrow: accrue per bar held on the short's entry notional for
+		// the qty being closed, then deduct from cash and the trade's P&L at close.
+		// Longs accrue nothing. Summed at close so it is deterministic and fully
+		// reflected here; a partial close accrues only on its own qty.
 		const barsHeld = Math.max(0, exitBarIndex - pos.entryBarIndex);
 		const borrowCost =
 			pos.side === 'short' && borrowPerBarRate > 0
-				? pos.entryPrice * pos.qty * borrowPerBarRate * barsHeld
+				? pos.entryPrice * qty * borrowPerBarRate * barsHeld
 				: 0;
 		if (borrowCost > 0) cash -= borrowCost;
 
 		const grossPnl =
-			pos.side === 'long'
-				? (exitPrice - pos.entryPrice) * pos.qty
-				: (pos.entryPrice - exitPrice) * pos.qty;
+			pos.side === 'long' ? (exitPrice - pos.entryPrice) * qty : (pos.entryPrice - exitPrice) * qty;
 		// Entry commission is already reflected in cash; approximate per-trade net
 		// P&L by subtracting both legs' commissions and any borrow cost from the gross.
-		const entryCommission = commissionFor(pos.qty, pos.entryPrice, spec);
+		const entryCommission = commissionFor(qty, pos.entryPrice, spec);
 		const pnl = grossPnl - commission - entryCommission - borrowCost;
-		const entryNotional = pos.entryPrice * pos.qty;
+		const entryNotional = pos.entryPrice * qty;
 		const pnlPct = entryNotional > 0 ? pnl / entryNotional : 0;
 		const rMultiple =
 			pos.stopPrice !== null && pos.initialRiskPerShare > 0
-				? pnl / (pos.initialRiskPerShare * pos.qty)
+				? pnl / (pos.initialRiskPerShare * qty)
 				: NaN;
 
 		cumulativePnl += pnl;
@@ -1099,7 +1133,7 @@ export function runBacktest(
 			entryPrice: pos.entryPrice,
 			exitTime,
 			exitPrice,
-			qty: pos.qty,
+			qty,
 			stopPrice: pos.stopPrice,
 			targetPrice: pos.targetPrice,
 			pnl,
@@ -1111,5 +1145,76 @@ export function runBacktest(
 			exitReason: reason,
 			barsHeld
 		});
+	}
+
+	function closePosition(
+		pos: OpenPosition,
+		rawExitPrice: number,
+		exitTime: string,
+		exitBarIndex: number,
+		reason: ExitReason
+	) {
+		settleExit(pos, pos.qty, rawExitPrice, exitTime, exitBarIndex, reason);
+	}
+
+	/**
+	 * §4c Scale-out price for a level: the profit target as a concrete price,
+	 * derived from entry geometry. `rMultiple` needs a stop (null otherwise → the
+	 * level is unfirable and skipped); `percent` is off the entry price. Long
+	 * targets are above entry, short targets below.
+	 */
+	function scaleOutLevelPrice(pos: OpenPosition, trigger: ScaleOutTrigger): number | null {
+		switch (trigger.kind) {
+			case 'rMultiple': {
+				if (pos.stopPrice === null || !(pos.initialRiskPerShare > 0)) return null;
+				const d = pos.initialRiskPerShare * trigger.r;
+				return pos.side === 'long' ? pos.entryPrice + d : pos.entryPrice - d;
+			}
+			case 'percent': {
+				const d = pos.entryPrice * (trigger.percent / 100);
+				return pos.side === 'long' ? pos.entryPrice + d : pos.entryPrice - d;
+			}
+			default:
+				return assertNever(trigger, 'Unknown scale-out trigger kind');
+		}
+	}
+
+	/**
+	 * §4c Scale-out: take any not-yet-hit partial-profit levels reached on `bar`,
+	 * in ascending order. Each fires once when price reaches its target (long:
+	 * high ≥ level; short: low ≤ level), closing round(originalQty × fraction)
+	 * shares (clamped to the remaining qty) at the LEVEL PRICE via settleExit and
+	 * reducing pos.qty. Returns true if the position was fully consumed by the
+	 * levels (qty reached 0), so the caller drops it.
+	 *
+	 * Leak-free: it reads ONLY this bar's OHLC (exactly like stops/targets) and
+	 * fills at the deterministic level price, never a future bar. Stop precedence
+	 * is enforced by the caller: protective exits are checked FIRST, so a bar that
+	 * also hits the stop fully closes the remainder at the stop and this never runs.
+	 */
+	function applyScaleOut(pos: OpenPosition, bar: Candle, barIndex: number): boolean {
+		const scaleOut = spec.risk.scaleOut;
+		if (!scaleOut || scaleOut.levels.length === 0) return false;
+		while (pos.scaledLevels < scaleOut.levels.length) {
+			const level = scaleOut.levels[pos.scaledLevels];
+			const levelPrice = scaleOutLevelPrice(pos, level.trigger);
+			if (levelPrice === null) {
+				// Unfirable level (e.g. rMultiple with no stop) — consume it and move on
+				// so later levels stay reachable; validation already flags this config.
+				pos.scaledLevels += 1;
+				continue;
+			}
+			const reached = pos.side === 'long' ? bar.h >= levelPrice : bar.l <= levelPrice;
+			if (!reached) break; // ascending: nothing further can be reached this bar
+			pos.scaledLevels += 1;
+			// Fraction is of the ORIGINAL qty; never close more than what remains.
+			const wanted = Math.round(pos.originalQty * level.fraction);
+			const qty = Math.min(wanted, pos.qty);
+			if (qty <= 0) continue; // tiny position → this level closes nothing; skip
+			settleExit(pos, qty, levelPrice, bar.t, barIndex, 'targetHit');
+			pos.qty -= qty;
+			if (pos.qty <= 0) return true; // levels fully consumed the position
+		}
+		return false;
 	}
 }
