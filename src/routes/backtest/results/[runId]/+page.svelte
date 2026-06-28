@@ -87,7 +87,7 @@
 		<div class="grid-2">
 			<Panel title="Equity curve">
 				{#snippet icon()}<ChartLine size={18} />{/snippet}
-				<EquityCurveChart data={result.equityCurve} />
+				<EquityCurveChart data={result.equityCurve} benchmark={result.benchmark?.equity} />
 			</Panel>
 			<Panel title="Drawdown">
 				{#snippet icon()}<ChartLine size={18} />{/snippet}

@@ -8,9 +8,10 @@
 
 	interface Props {
 		data: EquityPoint[];
+		benchmark?: EquityPoint[];
 		height?: number;
 	}
-	let { data, height = 260 }: Props = $props();
+	let { data, benchmark, height = 260 }: Props = $props();
 
 	const m = defaultMargins;
 
@@ -30,18 +31,28 @@
 			.map((p) => ({ ...p, date: new Date(p.t), value: p.equity }))
 			.filter((p) => !Number.isNaN(p.date.getTime()) && Number.isFinite(p.value))
 	);
+	const benchPoints = $derived(
+		(benchmark ?? [])
+			.map((p) => ({ ...p, date: new Date(p.t), value: p.equity }))
+			.filter((p) => !Number.isNaN(p.date.getTime()) && Number.isFinite(p.value))
+	);
 
 	const innerW = $derived(Math.max(0, width - m.left - m.right));
 	const innerH = $derived(Math.max(0, height - m.top - m.bottom));
 
 	const xScale = $derived(
 		scaleTime()
-			.domain((extent(points, (p) => p.date) as [Date, Date]) ?? [new Date(), new Date()])
+			.domain(
+				(extent([...points, ...benchPoints], (p) => p.date) as [Date, Date]) ?? [
+					new Date(),
+					new Date()
+				]
+			)
 			.range([0, innerW])
 	);
 
-	const yMin = $derived(min(points, (p) => p.value) ?? 0);
-	const yMax = $derived(max(points, (p) => p.value) ?? 1);
+	const yMin = $derived(min([...points, ...benchPoints], (p) => p.value) ?? 0);
+	const yMax = $derived(max([...points, ...benchPoints], (p) => p.value) ?? 1);
 	const yScale = $derived(scaleLinear().domain([yMin, yMax]).nice().range([innerH, 0]));
 
 	const yTicks = $derived(niceTicks(yScale.domain()[0], yScale.domain()[1], 5));
@@ -61,6 +72,15 @@
 						.map((p) => `${xScale(p.date).toFixed(2)},${yScale(p.value).toFixed(2)}`)
 						.join('L') +
 					`L${xScale(points[points.length - 1].date).toFixed(2)},${yScale(yScale.domain()[0]).toFixed(2)}Z`
+			: ''
+	);
+
+	const benchPath = $derived(
+		benchPoints.length
+			? 'M' +
+					benchPoints
+						.map((p) => `${xScale(p.date).toFixed(2)},${yScale(p.value).toFixed(2)}`)
+						.join('L')
 			: ''
 	);
 
@@ -126,6 +146,9 @@
 				{/each}
 
 				<path d={areaPath} fill="url(#{gradId})" />
+				{#if benchPath}
+					<path d={benchPath} class="bench" />
+				{/if}
 				<path d={linePath} class="line" />
 
 				{#if hover}
@@ -134,6 +157,13 @@
 				{/if}
 			</g>
 		</svg>
+
+		{#if benchPoints.length}
+			<div class="legend" aria-hidden="true">
+				<span class="lg"><span class="swatch strategy"></span>Strategy</span>
+				<span class="lg"><span class="swatch bench"></span>Benchmark</span>
+			</div>
+		{/if}
 
 		{#if hover}
 			<div
@@ -171,6 +201,35 @@
 		stroke-width: 1.75;
 		stroke-linejoin: round;
 		stroke-linecap: round;
+	}
+	.bench {
+		fill: none;
+		stroke: var(--c-text-muted);
+		stroke-width: 1.25;
+		stroke-dasharray: 4 3;
+		opacity: 0.85;
+	}
+	.legend {
+		display: flex;
+		gap: var(--sp-3);
+		margin-top: var(--sp-1);
+		font-size: var(--fs-xs);
+		color: var(--c-text-muted);
+	}
+	.lg {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+	}
+	.swatch {
+		width: 14px;
+		height: 0;
+		border-top: 2px solid var(--c-primary);
+		display: inline-block;
+	}
+	.swatch.bench {
+		border-top-style: dashed;
+		border-color: var(--c-text-muted);
 	}
 	.axis-label {
 		fill: var(--c-text-faint);

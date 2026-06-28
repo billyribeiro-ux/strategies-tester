@@ -107,6 +107,13 @@ export interface TradeMarker {
 	side: TradeSide;
 }
 
+/** Buy-and-hold benchmark, normalized to the strategy's initial capital. */
+export interface BenchmarkResult {
+	symbol: string;
+	equity: EquityPoint[];
+	returnPct: number;
+}
+
 export interface BacktestResult {
 	runId: string;
 	spec: StrategySpec;
@@ -118,6 +125,8 @@ export interface BacktestResult {
 	distribution: DistributionBin[];
 	/** Per-ticker OHLC (from FMP) for the optional price chart. */
 	candles?: Record<string, Candle[]>;
+	/** Optional buy-and-hold benchmark overlay (when universe.benchmark is set). */
+	benchmark?: BenchmarkResult;
 	warnings: string[];
 	computedAt: string;
 }

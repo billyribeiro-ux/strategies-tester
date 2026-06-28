@@ -91,7 +91,8 @@ const universeSchema = z.object({
 	tickers: z.array(z.string()),
 	timeframe: z.string().min(1),
 	dateRange: z.object({ from: z.string(), to: z.string() }),
-	session: sessionSchema
+	session: sessionSchema,
+	benchmark: z.string().optional()
 });
 
 const positionSizingSchema = z.discriminatedUnion('mode', [

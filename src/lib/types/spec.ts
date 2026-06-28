@@ -54,6 +54,8 @@ export interface Universe {
 	timeframe: TimeframeId;
 	dateRange: DateRange;
 	session: SessionSpec;
+	/** Optional buy-and-hold comparison ticker (e.g. 'SPY') overlaid on results. */
+	benchmark?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -270,6 +270,15 @@
 				</div>
 			{/snippet}
 		</Field>
+
+		<!-- Benchmark -->
+		<TextInput
+			label="Benchmark (optional)"
+			placeholder="e.g. SPY"
+			hint="Overlay a buy-and-hold benchmark on the equity curve."
+			value={store.spec.universe.benchmark ?? ''}
+			oninput={(e) => store.setBenchmark(e.currentTarget.value)}
+		/>
 	</div>
 </div>
 

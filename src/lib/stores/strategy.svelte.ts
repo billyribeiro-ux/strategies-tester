@@ -123,6 +123,11 @@ export class StrategyStore {
 		this.markDirty();
 	};
 
+	setBenchmark = (symbol: string) => {
+		this.spec.universe.benchmark = symbol.trim() || undefined;
+		this.markDirty();
+	};
+
 	// --- indicators ---------------------------------------------------------
 
 	private capByType(type: string): IndicatorCapability | undefined {

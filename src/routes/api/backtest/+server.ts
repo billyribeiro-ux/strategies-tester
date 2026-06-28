@@ -14,6 +14,7 @@ import { parseSpec, validateSpec, hasErrors } from '$lib/validation';
 import { CAPABILITIES } from '$lib/capabilities/catalog';
 import { fetchCandles } from '$lib/server/fmp/client';
 import { runBacktest } from '$lib/server/engine/engine';
+import { computeBenchmark } from '$lib/server/engine/benchmark';
 import { saveRun } from '$lib/server/db/repository';
 
 export const POST: RequestHandler = async ({ request, fetch }) => {
@@ -68,6 +69,33 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	}
 
 	const result = runBacktest(spec, candlesByTicker);
+
+	// Optional buy-and-hold benchmark overlay (failure is non-fatal).
+	const benchmarkSymbol = spec.universe.benchmark?.trim();
+	if (benchmarkSymbol) {
+		try {
+			const benchmarkCandles = await fetchCandles(
+				{
+					symbol: benchmarkSymbol,
+					timeframe: spec.universe.timeframe,
+					from,
+					to,
+					session: spec.universe.session
+				},
+				fetch
+			);
+			result.benchmark = computeBenchmark(
+				benchmarkSymbol,
+				benchmarkCandles,
+				spec.risk.initialCapital
+			);
+		} catch (e) {
+			result.warnings.push(
+				`Benchmark "${benchmarkSymbol}" unavailable: ${e instanceof Error ? e.message : 'fetch failed'}.`
+			);
+		}
+	}
+
 	saveRun({ result });
 	return json(result);
 };
