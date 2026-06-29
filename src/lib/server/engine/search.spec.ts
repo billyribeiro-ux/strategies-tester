@@ -9,7 +9,7 @@ import type {
 	PriceField,
 	StrategySpec
 } from '$lib/types';
-import { geneticSearch, objectives, randomSearch, type Objective } from './search';
+import { bayesianSearch, geneticSearch, objectives, randomSearch, type Objective } from './search';
 import { enumerateCombos } from './optimize';
 
 // ---------------------------------------------------------------------------
@@ -236,6 +236,70 @@ describe('geneticSearch', () => {
 });
 
 // ---------------------------------------------------------------------------
+// bayesianSearch
+// ---------------------------------------------------------------------------
+
+describe('bayesianSearch', () => {
+	it('is deterministic for a fixed seed (deep-equal results)', () => {
+		const spec = sweepSpec([2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+		const a = bayesianSearch(spec, DATA, { iterations: 8, initRandom: 3, seed: 21 });
+		const b = bayesianSearch(spec, DATA, { iterations: 8, initRandom: 3, seed: 21 });
+		expect(a).toEqual(b);
+		// Same best AND same number of evaluations across identical runs.
+		expect(a.best).toEqual(b.best);
+		expect(a.ran).toBe(b.ran);
+	});
+
+	it('never evaluates a combo twice: ran <= min(iterations, gridSize)', () => {
+		const spec = sweepSpec([2, 3, 4, 5, 6]); // gridSize = 5
+		// Budget larger than the grid: still capped at the grid size.
+		const big = bayesianSearch(spec, DATA, { iterations: 50, initRandom: 4, seed: 2 });
+		expect(big.ran).toBeLessThanOrEqual(5);
+		expect(big.ran).toBeLessThanOrEqual(50);
+		expect(big.totalCombos).toBe(5);
+		// No duplicate override sets in the evaluation history.
+		const keys = big.combos.map((c) => c.overrides.map((o) => o.value).join(','));
+		expect(new Set(keys).size).toBe(keys.length);
+
+		// Budget smaller than the grid: ran === iterations.
+		const small = bayesianSearch(spec, DATA, { iterations: 3, initRandom: 1, seed: 2 });
+		expect(small.ran).toBe(3);
+		expect(small.totalCombos).toBe(5);
+	});
+
+	it('is ranked best-first by the objective', () => {
+		const spec = sweepSpec([2, 3, 4, 5, 6, 7, 8]);
+		const r = bayesianSearch(spec, DATA, {
+			iterations: 7,
+			initRandom: 3,
+			seed: 3,
+			objective: objectives.totalReturn
+		});
+		for (let i = 1; i < r.combos.length; i++) {
+			expect(r.combos[i - 1].totalReturn).toBeGreaterThanOrEqual(r.combos[i].totalReturn);
+		}
+		expect(r.best).toEqual(r.combos[0]);
+	});
+
+	it('handles a single-value grid without error', () => {
+		const spec = sweepSpec([4]);
+		const r = bayesianSearch(spec, DATA, { iterations: 10, initRandom: 5, seed: 5 });
+		expect(r.totalCombos).toBe(1);
+		expect(r.ran).toBe(1);
+		expect(r.best).not.toBeNull();
+	});
+
+	it('handles empty params (degenerate grid)', () => {
+		const spec: OptimizationSpec = { base: baseSpec(), params: [] };
+		const r = bayesianSearch(spec, DATA, { iterations: 6, initRandom: 2, seed: 1 });
+		expect(r.totalCombos).toBe(1);
+		expect(r.ran).toBe(1);
+		expect(r.best).not.toBeNull();
+		expect(r.best!.overrides).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Rigged fixture: one param value is clearly best
 // ---------------------------------------------------------------------------
 
@@ -281,6 +345,18 @@ describe('rigged fixture — both searches surface the winning value', () => {
 	it('geneticSearch surfaces the winning value in best', () => {
 		const spec = sweepSpec(grid);
 		const r = geneticSearch(spec, trendData, { populationSize: 6, generations: 5, seed: 4 });
+		expect(r.best!.overrides[0].value).toBe(winningValue);
+	});
+
+	it('bayesianSearch surfaces the winning value in best (full sweep)', () => {
+		const spec = sweepSpec(grid);
+		// Budget == grid size so the TPE sampler exhausts the grid and must surface
+		// the brute-force maximum.
+		const r = bayesianSearch(spec, trendData, {
+			iterations: grid.length,
+			initRandom: 2,
+			seed: 4
+		});
 		expect(r.best!.overrides[0].value).toBe(winningValue);
 	});
 });

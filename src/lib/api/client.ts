@@ -14,6 +14,7 @@ import type {
 	OptimizationSpec,
 	SavedStrategy,
 	StrategySpec,
+	ValidationReport,
 	WalkForwardResult,
 	WalkForwardSpec
 } from '$lib/types';
@@ -99,6 +100,25 @@ export interface SettingsStatus {
 	source: 'db' | 'env' | 'none';
 }
 
+/** Search strategy for /api/optimize. 'grid' is the exhaustive sweep (default). */
+export type OptimizeMode = 'grid' | 'random' | 'genetic' | 'bayesian';
+
+/** Tunables for the 'random' / 'genetic' / 'bayesian' search modes. Pass a `seed` for determinism. */
+export interface OptimizeSearchOptions {
+	/** 'random' / 'bayesian': number of evaluated combinations (default 50). */
+	iterations?: number;
+	/** 'genetic': members per generation (default 20). */
+	populationSize?: number;
+	/** 'genetic': number of generations (default 10). */
+	generations?: number;
+	/** 'bayesian': warm-up random evaluations before the TPE model kicks in (default 10). */
+	initRandom?: number;
+	/** Seeded RNG for reproducible results (default 1). */
+	seed?: number;
+	/** Named objective: 'totalReturn' | 'sharpe' | 'oosDeflatedProxy' (default 'totalReturn'). */
+	objective?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -110,8 +130,32 @@ export function createApiClient(fetchFn: FetchFn = fetch) {
 		runBacktest: (spec: StrategySpec) =>
 			request<BacktestResult>(fetchFn, 'POST', '/api/backtest', spec),
 
-		optimize: (spec: OptimizationSpec) =>
-			request<OptimizationResult>(fetchFn, 'POST', '/api/optimize', spec),
+		/**
+		 * Run a parameter optimization. With no `search` arg this is the exhaustive
+		 * grid sweep (back-compatible). Pass `{ mode, searchOptions }` to use the
+		 * seeded 'random' or 'genetic' searchers; the response shape is unchanged.
+		 */
+		optimize: (
+			spec: OptimizationSpec,
+			search?: { mode?: OptimizeMode; searchOptions?: OptimizeSearchOptions }
+		) =>
+			request<OptimizationResult>(fetchFn, 'POST', '/api/optimize', {
+				...spec,
+				...(search?.mode ? { mode: search.mode } : {}),
+				...(search?.searchOptions ? { searchOptions: search.searchOptions } : {})
+			}),
+
+		/** Validate a single strategy run (DSR + Monte-Carlo). */
+		validateStrategy: (spec: StrategySpec) =>
+			request<ValidationReport>(fetchFn, 'POST', '/api/validate', { kind: 'single', spec }),
+
+		/** Validate an optimization (DSR/PBO/plateau over the grid). */
+		validateOptimization: (spec: OptimizationSpec, maxCombos?: number) =>
+			request<ValidationReport>(fetchFn, 'POST', '/api/validate', {
+				kind: 'optimization',
+				spec,
+				...(typeof maxCombos === 'number' ? { maxCombos } : {})
+			}),
 
 		walkForward: (spec: WalkForwardSpec) =>
 			request<WalkForwardResult>(fetchFn, 'POST', '/api/walkforward', spec),

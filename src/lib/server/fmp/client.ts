@@ -5,8 +5,17 @@
  * date range. It is cache-first: a hit in `candle_cache` (keyed by
  * symbol+timeframe+from+to) is returned without touching the network. On a miss
  * it calls the appropriate FMP `/stable/` endpoint, normalizes, optionally
- * aggregates (weekly) and session-filters (intraday), persists the result, and
- * returns it.
+ * aggregates (weekly/monthly) and session-filters (intraday), persists the
+ * result, and returns it.
+ *
+ * CORPORATE-ACTION ADJUSTMENT GUARANTEE
+ * -------------------------------------
+ * Daily (and therefore weekly/monthly, which are aggregated FROM daily) prices
+ * are SPLIT- and DIVIDEND-ADJUSTED so historical backtests are point-in-time
+ * comparable: a 2:1 split or a dividend never appears as a spurious price gap.
+ * We request FMP's adjusted EOD endpoint and, per bar, prefer its adjusted OHLC
+ * (`adjOpen/adjHigh/adjLow/adjClose`); if only `adjClose` is present we scale the
+ * raw OHLC by `adjClose/close` to preserve bar geometry. See `applyAdjustment`.
  *
  * Server-only: imports the private env and the DB. Never bundled to the client.
  */
@@ -19,6 +28,7 @@ import { candleCache } from '../db/schema';
 import { FMP_KEY, getSetting } from '../db/repository';
 import { createId } from '$lib/utils/id';
 import { MAX_RANGE_YEARS, splitDateRange } from './range';
+import { resampleToMonthly } from '../universe/resample';
 
 export type FetchFn = typeof fetch;
 
@@ -31,7 +41,11 @@ export interface CandleQuery {
 	session?: SessionSpec;
 }
 
-/** Raw FMP bar shape (both EOD and intraday endpoints share this shape). */
+/**
+ * Raw FMP bar shape. The EOD and intraday endpoints share the raw OHLCV fields;
+ * the adjusted EOD endpoint additionally carries split/dividend-adjusted prices
+ * (`adjOpen/adjHigh/adjLow/adjClose`, or at minimum `adjClose`).
+ */
 interface FmpBar {
 	date?: string;
 	open?: number;
@@ -39,6 +53,10 @@ interface FmpBar {
 	low?: number;
 	close?: number;
 	volume?: number;
+	adjOpen?: number;
+	adjHigh?: number;
+	adjLow?: number;
+	adjClose?: number;
 }
 
 const INTRADAY_INTERVAL: Record<string, string> = {
@@ -124,6 +142,12 @@ export async function fetchCandles(
 	} else if (timeframe === '1w') {
 		const daily = normalizeBars(await fetchDailyRange(symbol, from, to, apiKey, fetchFn));
 		candles = aggregateWeekly(daily);
+	} else if (timeframe === '1month') {
+		// Monthly = daily (split/dividend-adjusted) resampled by UTC calendar month.
+		// `resampleToMonthly` is leak-free: each bar is stamped at its month's last
+		// available day, and the engine only acts on closed bars (see resample.ts).
+		const daily = normalizeBars(await fetchDailyRange(symbol, from, to, apiKey, fetchFn));
+		candles = resampleToMonthly(daily);
 	} else if (INTRADAY_INTERVAL[timeframe]) {
 		const interval = INTRADAY_INTERVAL[timeframe];
 		const raw = normalizeBars(
@@ -150,7 +174,12 @@ async function fetchDaily(
 	apiKey: string,
 	fetchFn: FetchFn
 ): Promise<FmpBar[]> {
-	const url = `${BASE}/historical-price-eod/full?symbol=${encodeURIComponent(symbol)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&apikey=${encodeURIComponent(apiKey)}`;
+	// Use the SPLIT- and DIVIDEND-ADJUSTED EOD endpoint so historical bars are
+	// point-in-time comparable (no spurious gaps at splits/dividends). This
+	// returns `adjOpen/adjHigh/adjLow/adjClose`; `normalizeBars` resolves the
+	// adjusted series (see `applyAdjustment`). Weekly/monthly aggregate from this,
+	// so they inherit the adjustment.
+	const url = `${BASE}/historical-price-eod/dividend-adjusted?symbol=${encodeURIComponent(symbol)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&apikey=${encodeURIComponent(apiKey)}`;
 	return requestArray(url, symbol, fetchFn);
 }
 
@@ -247,6 +276,57 @@ function extractBars(body: unknown): FmpBar[] {
 }
 
 // ---------------------------------------------------------------------------
+// Corporate-action adjustment
+// ---------------------------------------------------------------------------
+
+/** OHLC of a bar (no timestamp/volume) — the values the adjustment operates on. */
+export interface Ohlc {
+	o: number;
+	h: number;
+	l: number;
+	c: number;
+}
+
+/**
+ * Resolve the SPLIT- and DIVIDEND-ADJUSTED OHLC for one raw FMP bar — pure and
+ * exported for direct unit testing.
+ *
+ * Priority (point-in-time correctness, geometry preserved):
+ *  1. Full adjusted OHLC present (`adjOpen/adjHigh/adjLow/adjClose`) — use as-is.
+ *  2. Only `adjClose` present (with a usable raw `close`) — scale the raw OHLC by
+ *     the factor `adjClose/close`. This applies the same proportional correction
+ *     a split/dividend implies to every leg, so bar geometry (gaps between O/H/L/C)
+ *     is preserved while the level matches the adjusted close.
+ *  3. Neither — fall back to raw OHLC unchanged (caller may surface a one-time note).
+ *
+ * Returns `null` when the raw OHLC itself is not fully numeric (caller skips the bar).
+ */
+export function applyAdjustment(b: FmpBar): Ohlc | null {
+	const o = num(b.open);
+	const h = num(b.high);
+	const l = num(b.low);
+	const c = num(b.close);
+	if ([o, h, l, c].some((x) => Number.isNaN(x))) return null;
+
+	const ao = num(b.adjOpen);
+	const ah = num(b.adjHigh);
+	const al = num(b.adjLow);
+	const ac = num(b.adjClose);
+
+	// 1. Full adjusted OHLC.
+	if (![ao, ah, al, ac].some((x) => Number.isNaN(x))) {
+		return { o: ao, h: ah, l: al, c: ac };
+	}
+	// 2. adjClose-only: scale raw OHLC by adjClose/close to preserve geometry.
+	if (!Number.isNaN(ac) && c !== 0) {
+		const f = ac / c;
+		return { o: o * f, h: h * f, l: l * f, c: ac };
+	}
+	// 3. No adjustment data: raw OHLC.
+	return { o, h, l, c };
+}
+
+// ---------------------------------------------------------------------------
 // Normalization
 // ---------------------------------------------------------------------------
 
@@ -254,13 +334,17 @@ function normalizeBars(bars: FmpBar[]): Candle[] {
 	const out: Candle[] = [];
 	for (const b of bars) {
 		if (!b.date) continue;
-		const o = num(b.open);
-		const h = num(b.high);
-		const l = num(b.low);
-		const c = num(b.close);
+		const adj = applyAdjustment(b);
+		if (!adj) continue; // raw OHLC not fully numeric
 		const v = num(b.volume);
-		if ([o, h, l, c].some((x) => Number.isNaN(x))) continue;
-		out.push({ t: toIso(b.date), o, h, l, c, v: Number.isNaN(v) ? 0 : v });
+		out.push({
+			t: toIso(b.date),
+			o: adj.o,
+			h: adj.h,
+			l: adj.l,
+			c: adj.c,
+			v: Number.isNaN(v) ? 0 : v
+		});
 	}
 	out.sort((a, b) => Date.parse(a.t) - Date.parse(b.t));
 	// De-duplicate by timestamp (chunked daily fetches can repeat a boundary day),

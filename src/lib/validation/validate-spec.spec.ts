@@ -59,6 +59,48 @@ describe('validateSpec', () => {
 		);
 	});
 
+	it('rejects an rMultiple scale-out level when there is no stop loss (§4c)', () => {
+		const spec = validSpec();
+		spec.risk.stopLoss = { mode: 'none' };
+		spec.risk.scaleOut = { levels: [{ trigger: { kind: 'rMultiple', r: 2 }, fraction: 0.5 }] };
+		const issues = v(spec);
+		expect(
+			issues.some((i) => i.path === 'risk.scaleOut.levels[0].trigger' && i.severity === 'error')
+		).toBe(true);
+	});
+
+	it('accepts an rMultiple scale-out level when a stop loss is present (§4c)', () => {
+		const spec = validSpec();
+		spec.risk.stopLoss = { mode: 'percent', percent: 2 };
+		spec.risk.scaleOut = { levels: [{ trigger: { kind: 'rMultiple', r: 2 }, fraction: 0.5 }] };
+		expect(hasErrors(v(spec))).toBe(false);
+	});
+
+	it('errors when scale-out fractions sum to more than 1 (§4c)', () => {
+		const spec = validSpec();
+		spec.risk.scaleOut = {
+			levels: [
+				{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.6 },
+				{ trigger: { kind: 'percent', percent: 10 }, fraction: 0.6 }
+			]
+		};
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'risk.scaleOut' && i.severity === 'error')).toBe(true);
+	});
+
+	it('warns (no error) when scale-out fractions sum to exactly 1 — no runner (§4c)', () => {
+		const spec = validSpec();
+		spec.risk.scaleOut = {
+			levels: [
+				{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.5 },
+				{ trigger: { kind: 'percent', percent: 10 }, fraction: 0.5 }
+			]
+		};
+		const issues = v(spec);
+		expect(hasErrors(issues)).toBe(false);
+		expect(issues.some((i) => i.path === 'risk.scaleOut' && i.severity === 'warning')).toBe(true);
+	});
+
 	it('errors on rising/falling applied to a constant', () => {
 		const spec = validSpec();
 		spec.rules.longEntry.children = [createUnaryLeaf({ kind: 'constant', value: 5 }, 'rising', 1)];
@@ -104,6 +146,95 @@ describe('validateSpec', () => {
 		spec.risk.stopLoss = { mode: 'atr', atrRef: spec.indicators[0].id, multiple: 2 };
 		const issues = v(spec);
 		expect(issues.some((i) => i.path === 'risk.stopLoss' && i.severity === 'error')).toBe(true);
+	});
+
+	it('allows a HIGHER indicator timeframe than the universe (§3 MTF)', () => {
+		const spec = validSpec();
+		spec.universe.timeframe = '1h';
+		spec.indicators[0].timeframe = '4h'; // higher than 1h → allowed
+		expect(hasErrors(v(spec))).toBe(false);
+	});
+
+	it('allows an indicator timeframe equal to the universe', () => {
+		const spec = validSpec();
+		spec.universe.timeframe = '1h';
+		spec.indicators[0].timeframe = '1h';
+		expect(hasErrors(v(spec))).toBe(false);
+	});
+
+	it('errors on an indicator timeframe LOWER than the universe', () => {
+		const spec = validSpec();
+		spec.universe.timeframe = '1d';
+		spec.indicators[0].timeframe = '1h'; // lower than 1d → fabricated sub-bar data
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'indicators[0].timeframe' && i.severity === 'error')).toBe(
+			true
+		);
+	});
+
+	it('errors on an unknown indicator timeframe', () => {
+		const spec = validSpec();
+		spec.indicators[0].timeframe = 'bogus';
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'indicators[0].timeframe' && i.severity === 'error')).toBe(
+			true
+		);
+	});
+
+	it('passes a valid index universe source with no explicit tickers', () => {
+		const spec = validSpec();
+		spec.universe.tickers = []; // index resolves its own members PIT
+		spec.universe.source = { kind: 'index', provider: 'fmpPit', index: 'sp500' };
+		expect(hasErrors(v(spec))).toBe(false);
+	});
+
+	it('still requires tickers when the source is explicit (default)', () => {
+		const spec = validSpec();
+		spec.universe.tickers = [];
+		spec.universe.source = { kind: 'tickers' };
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'universe.tickers' && i.severity === 'error')).toBe(true);
+	});
+
+	it('errors on an empty index slug for an index source', () => {
+		const spec = validSpec();
+		spec.universe.source = { kind: 'index', provider: 'fmpPit', index: '   ' };
+		const issues = v(spec);
+		expect(issues.some((i) => i.path === 'universe.source.index' && i.severity === 'error')).toBe(
+			true
+		);
+	});
+
+	it('errors on a non-positive maxSymbols for an index source', () => {
+		const spec = validSpec();
+		spec.universe.source = { kind: 'index', provider: 'fmpPit', index: 'sp500', maxSymbols: 0 };
+		const issues = v(spec);
+		expect(
+			issues.some((i) => i.path === 'universe.source.maxSymbols' && i.severity === 'error')
+		).toBe(true);
+	});
+
+	it('errors on a non-integer maxSymbols for an index source', () => {
+		const spec = validSpec();
+		spec.universe.source = { kind: 'index', provider: 'fmpPit', index: 'sp500', maxSymbols: 12.5 };
+		const issues = v(spec);
+		expect(
+			issues.some((i) => i.path === 'universe.source.maxSymbols' && i.severity === 'error')
+		).toBe(true);
+	});
+
+	it('errors on an unsupported index provider', () => {
+		const spec = validSpec();
+		// Construct an invalid provider deliberately to exercise the semantic guard.
+		spec.universe.source = {
+			kind: 'index',
+			provider: 'bogus',
+			index: 'sp500'
+		} as unknown as StrategySpec['universe']['source'];
+		const issues = v(spec);
+		expect(
+			issues.some((i) => i.path === 'universe.source.provider' && i.severity === 'error')
+		).toBe(true);
 	});
 
 	it('requires a component for multi-output indicators', () => {

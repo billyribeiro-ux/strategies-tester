@@ -19,6 +19,19 @@
 	const priceSourceOptions = $derived(
 		capability ? capability.allowedPriceSources.map((s) => ({ value: s, label: s })) : []
 	);
+
+	// Multi-timeframe picker (spec §3). Offer the chart (base) timeframe plus any
+	// HIGHER timeframe; never a lower one (it would fabricate sub-bar data). The
+	// empty value clears the reference back to "Chart (base)".
+	const baseSeconds = $derived(
+		store.capabilities.timeframes.find((t) => t.id === store.spec.universe.timeframe)?.seconds ?? 0
+	);
+	const timeframeOptions = $derived([
+		{ value: '', label: 'Chart (base)' },
+		...store.capabilities.timeframes
+			.filter((t) => t.seconds > baseSeconds)
+			.map((t) => ({ value: t.id, label: t.label }))
+	]);
 </script>
 
 <div class="indicator">
@@ -56,6 +69,15 @@
 				bind:value={
 					() => instance.priceSource,
 					(v) => store.setIndicatorPriceSource(instance.id, v as PriceField)
+				}
+			/>
+			<Select
+				label="Timeframe"
+				hint="Compute on a higher timeframe (aligned to the chart with no look-ahead)."
+				options={timeframeOptions}
+				bind:value={
+					() => instance.timeframe ?? '',
+					(v) => store.setIndicatorTimeframe(instance.id, v || undefined)
 				}
 			/>
 		</div>

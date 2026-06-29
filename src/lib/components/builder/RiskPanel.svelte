@@ -2,6 +2,8 @@
 	import type {
 		CommissionModel,
 		PositionSizing,
+		ScaleOutLevel,
+		ScaleOutTrigger,
 		SlippageModel,
 		StopLoss,
 		TakeProfit,
@@ -10,8 +12,16 @@
 	import { assertNever } from '$lib/utils/assert-never';
 	import { indicatorLabel } from '$lib/spec/defaults';
 	import type { StrategyStore } from '$lib/stores/strategy.svelte';
-	import { Callout, NumberInput, Panel, Select } from '$lib/components/ui';
-	import { Shield } from 'phosphor-svelte';
+	import {
+		Button,
+		Callout,
+		IconButton,
+		NumberInput,
+		Panel,
+		Select,
+		TextInput
+	} from '$lib/components/ui';
+	import { Plus, Shield, Trash } from 'phosphor-svelte';
 
 	interface Props {
 		store: StrategyStore;
@@ -33,6 +43,8 @@
 	const sizingModeOptions = [
 		{ value: 'percentEquity', label: '% of equity' },
 		{ value: 'riskBased', label: 'Risk-based (% per trade)' },
+		{ value: 'volatilityTarget', label: 'Volatility target (ATR)' },
+		{ value: 'fractionalKelly', label: 'Fractional Kelly' },
 		{ value: 'fixedShares', label: 'Fixed shares' },
 		{ value: 'fixedNotional', label: 'Fixed notional' }
 	];
@@ -44,6 +56,12 @@
 				break;
 			case 'riskBased':
 				store.setSizing({ mode, riskPercent: 1 });
+				break;
+			case 'volatilityTarget':
+				store.setSizing({ mode, targetVolPercent: 1, atrRef: atrOptions[0]?.value ?? '' });
+				break;
+			case 'fractionalKelly':
+				store.setSizing({ mode, fraction: 0.5 });
 				break;
 			case 'fixedShares':
 				store.setSizing({ mode, shares: 100 });
@@ -136,6 +154,60 @@
 		}
 	}
 
+	// --- scale-out / partial profit (§4c) -----------------------------------
+
+	const scaleOutLevels = $derived(risk.scaleOut?.levels ?? []);
+
+	const scaleOutTriggerOptions = [
+		{ value: 'percent', label: '% profit' },
+		{ value: 'rMultiple', label: 'R multiple' }
+	];
+
+	/** Running sum of fractions, for the "leftover runner" hint. */
+	const scaleOutFractionSum = $derived(scaleOutLevels.reduce((acc, l) => acc + l.fraction, 0));
+
+	function commitScaleOut(levels: ScaleOutLevel[]) {
+		store.setScaleOut(levels.length > 0 ? { levels } : undefined);
+	}
+
+	function addScaleOutLevel() {
+		commitScaleOut([
+			...scaleOutLevels,
+			{ trigger: { kind: 'percent', percent: 5 }, fraction: 0.5 }
+		]);
+	}
+
+	function removeScaleOutLevel(index: number) {
+		commitScaleOut(scaleOutLevels.filter((_, i) => i !== index));
+	}
+
+	function setScaleOutTriggerKind(index: number, kind: ScaleOutTrigger['kind']) {
+		const trigger: ScaleOutTrigger =
+			kind === 'rMultiple' ? { kind: 'rMultiple', r: 2 } : { kind: 'percent', percent: 5 };
+		commitScaleOut(scaleOutLevels.map((l, i) => (i === index ? { ...l, trigger } : l)));
+	}
+
+	function setScaleOutTriggerValue(index: number, value: number) {
+		commitScaleOut(
+			scaleOutLevels.map((l, i) => {
+				if (i !== index) return l;
+				const trigger: ScaleOutTrigger =
+					l.trigger.kind === 'rMultiple'
+						? { kind: 'rMultiple', r: value }
+						: { kind: 'percent', percent: value };
+				return { ...l, trigger };
+			})
+		);
+	}
+
+	function setScaleOutFraction(index: number, fraction: number) {
+		commitScaleOut(scaleOutLevels.map((l, i) => (i === index ? { ...l, fraction } : l)));
+	}
+
+	const scaleOutNeedsStop = $derived(
+		scaleOutLevels.some((l) => l.trigger.kind === 'rMultiple') && risk.stopLoss.mode === 'none'
+	);
+
 	// --- commission ---------------------------------------------------------
 
 	const commissionModeOptions = [
@@ -191,6 +263,19 @@
 	const riskBasedNeedsStop = $derived(
 		risk.positionSizing.mode === 'riskBased' && risk.stopLoss.mode === 'none'
 	);
+
+	// --- hard-to-borrow (§5) ------------------------------------------------
+
+	/** Comma/space-separated text for the hard-to-borrow symbol list. */
+	const hardToBorrowText = $derived((risk.hardToBorrowSymbols ?? []).join(', '));
+
+	function setHardToBorrowText(text: string) {
+		store.setHardToBorrowSymbols(text.split(/[\s,]+/).filter(Boolean));
+	}
+
+	const hardToBorrowNeedsSymbols = $derived(
+		(risk.hardToBorrowAPR ?? 0) > 0 && (risk.hardToBorrowSymbols ?? []).length === 0
+	);
 </script>
 
 <Panel title="Risk & money management" description="Position sizing, stops, targets and costs.">
@@ -223,6 +308,93 @@
 					min={0}
 					step={1}
 					bind:value={() => risk.pyramiding, (v) => store.setPyramiding(Math.max(0, Math.round(v)))}
+				/>
+				<NumberInput
+					label="Max bars in trade"
+					hint="Time exit, 0 = no limit"
+					min={0}
+					step={1}
+					bind:value={
+						() => risk.maxBarsInTrade ?? 0,
+						(v) => store.setMaxBarsInTrade(v > 0 ? Math.round(v) : undefined)
+					}
+				/>
+				<NumberInput
+					label="Max drawdown stop"
+					suffix="%"
+					hint="Halt new entries past this drawdown, 0 = off"
+					min={0}
+					max={100}
+					step={1}
+					bind:value={
+						() => risk.maxDrawdownStopPercent ?? 0,
+						(v) => store.setMaxDrawdownStopPercent(v > 0 ? v : undefined)
+					}
+				/>
+				<NumberInput
+					label="Max portfolio heat"
+					suffix="%"
+					hint="Cap on total open risk, 0 = off"
+					min={0}
+					max={100}
+					step={1}
+					bind:value={
+						() => risk.maxPortfolioHeatPercent ?? 0,
+						(v) => store.setMaxPortfolioHeatPercent(v > 0 ? v : undefined)
+					}
+				/>
+				<NumberInput
+					label="Max correlation"
+					hint="Block entries correlated with open positions, 0 = off"
+					min={0}
+					max={1}
+					step={0.05}
+					bind:value={
+						() => risk.maxCorrelation ?? 0,
+						(v) => store.setMaxCorrelation(v > 0 ? Math.min(1, v) : undefined)
+					}
+				/>
+				{#if risk.maxCorrelation !== undefined}
+					<NumberInput
+						label="Correlation lookback"
+						hint="Bars of returns to correlate (≥ 20)"
+						min={1}
+						step={1}
+						bind:value={
+							() => risk.correlationLookback ?? 60,
+							(v) => store.setCorrelationLookback(v > 0 ? Math.round(v) : undefined)
+						}
+					/>
+				{/if}
+				<NumberInput
+					label="Max leverage"
+					suffix="×"
+					hint="Gross exposure cap as a multiple of equity, 1 = cash-only"
+					min={1}
+					step={0.5}
+					bind:value={
+						() => risk.maxLeverage ?? 1, (v) => store.setMaxLeverage(v > 1 ? v : undefined)
+					}
+				/>
+				<NumberInput
+					label="Re-entry cooldown"
+					hint="Bars to block a new entry on a ticker after it closes, 0 = off"
+					min={0}
+					step={1}
+					bind:value={
+						() => risk.reentryCooldownBars ?? 0,
+						(v) => store.setReentryCooldownBars(v > 0 ? Math.round(v) : undefined)
+					}
+				/>
+				<NumberInput
+					label="Max positions per sector"
+					hint="Cap on concurrent open positions per sector (needs live sector data), 0 = off"
+					min={0}
+					step={1}
+					bind:value={
+						() => risk.maxPositionsPerSector ?? 0,
+						(v) => store.setMaxPositionsPerSector(v > 0 ? Math.round(v) : undefined)
+					}
 				/>
 			</div>
 		</section>
@@ -260,6 +432,68 @@
 							() =>
 								risk.positionSizing.mode === 'riskBased' ? risk.positionSizing.riskPercent : 0,
 							(v) => store.setSizing({ mode: 'riskBased', riskPercent: v })
+						}
+					/>
+				{:else if risk.positionSizing.mode === 'volatilityTarget'}
+					{#if hasAtr}
+						<NumberInput
+							label="Target volatility"
+							suffix="%"
+							hint="Equity % budgeted per ATR of risk"
+							min={0}
+							step={0.1}
+							bind:value={
+								() =>
+									risk.positionSizing.mode === 'volatilityTarget'
+										? risk.positionSizing.targetVolPercent
+										: 0,
+								(v) =>
+									store.setSizing({
+										mode: 'volatilityTarget',
+										targetVolPercent: v,
+										atrRef:
+											risk.positionSizing.mode === 'volatilityTarget'
+												? risk.positionSizing.atrRef
+												: (atrOptions[0]?.value ?? '')
+									})
+							}
+						/>
+						<Select
+							label="ATR indicator"
+							options={atrOptions}
+							placeholder="Select ATR"
+							bind:value={
+								() =>
+									risk.positionSizing.mode === 'volatilityTarget' ? risk.positionSizing.atrRef : '',
+								(v) =>
+									store.setSizing({
+										mode: 'volatilityTarget',
+										atrRef: v,
+										targetVolPercent:
+											risk.positionSizing.mode === 'volatilityTarget'
+												? risk.positionSizing.targetVolPercent
+												: 1
+									})
+							}
+						/>
+					{:else}
+						<Callout tone="warning">Add an ATR indicator to use volatility-target sizing.</Callout>
+					{/if}
+				{:else if risk.positionSizing.mode === 'fractionalKelly'}
+					<NumberInput
+						label="Kelly fraction"
+						hint="Fraction of full Kelly (≤ 0.5 typical); sizes from closed-trade edge"
+						min={0}
+						max={1}
+						step={0.05}
+						bind:value={
+							() =>
+								risk.positionSizing.mode === 'fractionalKelly' ? risk.positionSizing.fraction : 0,
+							(v) =>
+								store.setSizing({
+									mode: 'fractionalKelly',
+									fraction: Math.min(1, Math.max(0.01, v))
+								})
 						}
 					/>
 				{:else if risk.positionSizing.mode === 'fixedShares'}
@@ -489,6 +723,91 @@
 			</div>
 		</section>
 
+		<!-- Scale-out / partial profit -->
+		<section class="block">
+			<h3>Scale-out (partial profit)</h3>
+			{#if scaleOutLevels.length === 0}
+				<p class="muted">
+					Take partial profits at one or more targets, leaving a runner managed by your stop /
+					target / trailing logic.
+				</p>
+			{:else}
+				<div class="levels">
+					{#each scaleOutLevels as level, i (i)}
+						<div class="level">
+							<Select
+								label="Trigger"
+								options={scaleOutTriggerOptions}
+								bind:value={
+									() => level.trigger.kind,
+									(v) => setScaleOutTriggerKind(i, v as ScaleOutTrigger['kind'])
+								}
+							/>
+							{#if level.trigger.kind === 'rMultiple'}
+								<NumberInput
+									label="Reward"
+									suffix="R"
+									min={0}
+									step={0.1}
+									bind:value={
+										() => (level.trigger.kind === 'rMultiple' ? level.trigger.r : 0),
+										(v) => setScaleOutTriggerValue(i, v)
+									}
+								/>
+							{:else}
+								<NumberInput
+									label="Profit"
+									suffix="%"
+									min={0}
+									step={0.1}
+									bind:value={
+										() => (level.trigger.kind === 'percent' ? level.trigger.percent : 0),
+										(v) => setScaleOutTriggerValue(i, v)
+									}
+								/>
+							{/if}
+							<NumberInput
+								label="Close fraction"
+								hint="Of original qty, 0–1"
+								min={0}
+								max={1}
+								step={0.05}
+								bind:value={() => level.fraction, (v) => setScaleOutFraction(i, v)}
+							/>
+							<IconButton
+								label="Remove level"
+								variant="danger"
+								onclick={() => removeScaleOutLevel(i)}
+							>
+								<Trash size={16} />
+							</IconButton>
+						</div>
+					{/each}
+				</div>
+				{#if scaleOutFractionSum > 1}
+					<Callout tone="warning">
+						Fractions sum to {scaleOutFractionSum.toFixed(2)} (&gt; 1) — they cannot exceed the whole
+						position.
+					</Callout>
+				{:else if scaleOutFractionSum === 1}
+					<Callout tone="info">
+						Fractions sum to 1 — the levels fully close the position, leaving no runner.
+					</Callout>
+				{/if}
+				{#if scaleOutNeedsStop}
+					<Callout tone="warning">
+						An R-multiple level needs a stop loss to define R. Add a stop below or use a % trigger.
+					</Callout>
+				{/if}
+			{/if}
+			<div>
+				<Button size="sm" variant="ghost" onclick={addScaleOutLevel}>
+					{#snippet icon()}<Plus size={16} />{/snippet}
+					Add level
+				</Button>
+			</div>
+		</section>
+
 		<!-- Costs -->
 		<section class="block">
 			<h3>Trading costs</h3>
@@ -584,6 +903,53 @@
 					/>
 				{/if}
 			</div>
+			<div class="grid">
+				<NumberInput
+					label="Short borrow APR"
+					suffix="%"
+					hint="Annual cost to borrow shorts, 0 = none"
+					min={0}
+					step={0.5}
+					bind:value={
+						() => risk.shortBorrowAPR ?? 0, (v) => store.setShortBorrowAPR(v > 0 ? v : undefined)
+					}
+				/>
+				<NumberInput
+					label="Margin interest APR"
+					suffix="%"
+					hint="Annual interest on borrowed cash (needs leverage > 1), 0 = none"
+					min={0}
+					step={0.5}
+					bind:value={
+						() => risk.marginInterestAPR ?? 0,
+						(v) => store.setMarginInterestAPR(v > 0 ? v : undefined)
+					}
+				/>
+				<NumberInput
+					label="Hard-to-borrow APR"
+					suffix="%"
+					hint="Extra borrow cost for listed shorts, on top of short borrow APR, 0 = none"
+					min={0}
+					step={0.5}
+					bind:value={
+						() => risk.hardToBorrowAPR ?? 0, (v) => store.setHardToBorrowAPR(v > 0 ? v : undefined)
+					}
+				/>
+			</div>
+			<div class="grid">
+				<TextInput
+					label="Hard-to-borrow symbols"
+					hint="Comma-separated tickers charged the extra short borrow cost"
+					placeholder="e.g. GME, AMC"
+					bind:value={() => hardToBorrowText, (v) => setHardToBorrowText(v)}
+				/>
+			</div>
+			{#if hardToBorrowNeedsSymbols}
+				<Callout tone="warning">
+					A hard-to-borrow APR is set but no symbols are listed — it will have no effect. Add
+					tickers above or clear the APR.
+				</Callout>
+			{/if}
 		</section>
 	</div>
 </Panel>
@@ -611,6 +977,22 @@
 		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
 		gap: var(--sp-3);
 		align-items: start;
+	}
+	.muted {
+		font-size: var(--fs-sm);
+		color: var(--c-text-muted);
+		margin: 0;
+	}
+	.levels {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-3);
+	}
+	.level {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(6rem, 1fr)) auto;
+		gap: var(--sp-3);
+		align-items: end;
 	}
 
 	@media (min-width: 64rem) {

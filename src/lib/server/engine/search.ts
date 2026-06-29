@@ -339,5 +339,197 @@ function bestOf(
 	return best;
 }
 
+// ---------------------------------------------------------------------------
+// Bayesian search (TPE — Tree-structured Parzen Estimator)
+// ---------------------------------------------------------------------------
+
+/**
+ * A pragmatic SMBO (sequential model-based optimization) over the DISCRETE
+ * parameter grid, using a TPE-style sampler — fully seeded and deterministic.
+ *
+ * The full grid is enumerated up front (capped at `maxCombos`) and each candidate
+ * keeps a stable id (`bs_<gridIndex>`) so every tie-break is reproducible. The
+ * search then proceeds:
+ *
+ *  1. WARM-UP: evaluate `initRandom` distinct seeded-random candidates to seed the
+ *     history (so both the "good" and "bad" density estimates have support).
+ *  2. MODEL + SELECT: each subsequent iteration splits the evaluated history into
+ *     "good" (the top `goodQuantile`, e.g. top 25% by objective) and "bad" (the
+ *     rest), then estimates, per swept param, a Laplace-smoothed categorical
+ *     likelihood of each discrete value under each group: `l(x)` from the good set
+ *     and `g(x)` from the bad set. The TPE acquisition for an UN-evaluated
+ *     candidate is the product over params of `l(value) / g(value)` — equivalently
+ *     the sum of `log l - log g` (used here for numerical stability). The highest
+ *     acquisition wins; ties break on the lower grid id. That candidate is
+ *     evaluated and appended to the history.
+ *  3. STOP at `iterations` total evaluations or when the grid is exhausted.
+ *
+ * Backtests are memoized by combo key, so no combo is ever evaluated twice; thus
+ * `ran <= min(iterations, gridSize)`. Returns a best-first `OptimizationResult`
+ * ranked across the whole evaluation history, with `sortMetric` set to a label.
+ *
+ * Determinism: identical `(spec, seed)` ⇒ byte-for-byte identical result.
+ */
+export function bayesianSearch(
+	spec: OptimizationSpec,
+	candlesByTicker: Record<string, Candle[]>,
+	opts: {
+		iterations?: number;
+		seed?: number;
+		objective?: Objective;
+		initRandom?: number;
+		maxCombos?: number;
+		goodQuantile?: number;
+	}
+): OptimizationResult {
+	const objective = opts.objective ?? objectives.totalReturn;
+	const maxCombos = opts.maxCombos ?? MAX_OPTIMIZATION_COMBOS;
+	const seed = opts.seed ?? 1;
+	const goodQuantile = opts.goodQuantile ?? 0.25;
+	const sortMetric = 'objective:bayesianSearch';
+	const warnings: string[] = [];
+
+	const params = usableParams(spec);
+	const all = enumerateCombos(spec.params);
+	const totalCombos = all.length;
+
+	// Candidate pool, capped by the safety cap. Each candidate keeps its grid index
+	// as a stable id so acquisition tie-breaks (and ranking ties) are deterministic.
+	const cap = Math.min(totalCombos, maxCombos);
+	const candidates = all.slice(0, cap).map((overrides, i) => ({ id: `bs_${i}`, overrides }));
+
+	const requested = Math.max(0, Math.floor(opts.iterations ?? 50));
+	const iterations = Math.min(requested, candidates.length);
+	const initRandom = Math.min(Math.max(0, Math.floor(opts.initRandom ?? 10)), iterations);
+
+	// History: id -> { combo, score }. Memoizes so no candidate is evaluated twice.
+	const history = new Map<string, { combo: OptimizationCombo; score: number }>();
+	const evaluate = (cand: { id: string; overrides: OptimizationOverride[] }): number => {
+		const hit = history.get(cand.id);
+		if (hit) return hit.score;
+		const result = runBacktest(applyOverrides(spec.base, cand.overrides), candlesByTicker);
+		const combo = buildCombo(cand.id, cand.overrides, result);
+		const score = objective(result);
+		history.set(cand.id, { combo, score });
+		return score;
+	};
+
+	const rng = makeRng(seed);
+
+	// (1) Warm-up: evaluate `initRandom` DISTINCT seeded-random candidates. A seeded
+	// shuffle of the candidate pool yields distinct picks without replacement.
+	const warmup = shuffle(candidates, rng).slice(0, initRandom);
+	for (const cand of warmup) evaluate(cand);
+
+	// (2) Model-based selection for the remaining budget.
+	for (let i = history.size; i < iterations; i++) {
+		const remaining = candidates.filter((c) => !history.has(c.id));
+		if (remaining.length === 0) break;
+
+		const { good, bad } = splitHistory(history, goodQuantile);
+		const lDensities = perParamDensities(good, params);
+		const gDensities = perParamDensities(bad, params);
+
+		// Acquisition: sum_j [ log l(x_j) - log g(x_j) ]. Higher is better; ties go
+		// to the lower grid id (candidates are already in ascending id order).
+		let best = remaining[0];
+		let bestScore = acquisition(best.overrides, lDensities, gDensities);
+		for (let k = 1; k < remaining.length; k++) {
+			const s = acquisition(remaining[k].overrides, lDensities, gDensities);
+			if (s > bestScore) {
+				best = remaining[k];
+				bestScore = s;
+			}
+		}
+		evaluate(best);
+	}
+
+	const combos = [...history.values()].map((h) => h.combo);
+	const scores = new Map([...history.values()].map((h) => [h.combo.id, h.score]));
+	const ranked = rankByObjective(combos, scores);
+
+	const capped = totalCombos > cap;
+	if (capped) {
+		warnings.push(
+			`Grid has ${totalCombos} combinations; searched the first ${cap} (safety cap ${maxCombos}).`
+		);
+	}
+	warnings.push(
+		`bayesianSearch (TPE) evaluated ${history.size} distinct combinations ` +
+			`(${initRandom} warm-up, ${iterations} budget) of ${totalCombos} possible.`
+	);
+
+	return {
+		combos: ranked,
+		best: ranked[0] ?? null,
+		totalCombos,
+		ran: ranked.length,
+		capped,
+		sortMetric,
+		warnings
+	};
+}
+
+/** Split evaluated history into "good" (top quantile by score) and "bad". */
+function splitHistory(
+	history: Map<string, { combo: OptimizationCombo; score: number }>,
+	goodQuantile: number
+): { good: OptimizationOverride[][]; bad: OptimizationOverride[][] } {
+	// Sort by score desc, ties by combo id so the split is deterministic.
+	const entries = [...history.values()].sort((a, b) => {
+		const d = b.score - a.score;
+		if (d !== 0) return d;
+		return a.combo.id < b.combo.id ? -1 : a.combo.id > b.combo.id ? 1 : 0;
+	});
+	// At least one in "good"; the rest in "bad" (when there are >= 2 evaluations).
+	const nGood = Math.max(
+		1,
+		Math.min(entries.length - 1, Math.round(entries.length * goodQuantile))
+	);
+	const good = entries.slice(0, nGood).map((e) => e.combo.overrides);
+	const bad = entries.slice(nGood).map((e) => e.combo.overrides);
+	return { good, bad };
+}
+
+/**
+ * Per-parameter Laplace-smoothed categorical likelihoods over a group of override
+ * sets. Returns, for each param index, a map from value → P(value | group). With
+ * Laplace (add-one) smoothing every value in the param's grid has positive mass,
+ * so `g(x)` is never zero and the acquisition ratio is always finite.
+ */
+function perParamDensities(
+	group: OptimizationOverride[][],
+	params: OptimizeParam[]
+): Map<number, number>[] {
+	return params.map((p, j) => {
+		const counts = new Map<number, number>();
+		for (const v of p.values) counts.set(v, 1); // Laplace add-one prior.
+		for (const overrides of group) {
+			const v = overrides[j]?.value;
+			if (typeof v === 'number') counts.set(v, (counts.get(v) ?? 1) + 1);
+		}
+		const total = group.length + p.values.length; // sum of smoothed counts.
+		const dens = new Map<number, number>();
+		for (const [v, c] of counts) dens.set(v, c / total);
+		return dens;
+	});
+}
+
+/** TPE acquisition: sum_j [ log l(x_j) - log g(x_j) ] over the candidate's genes. */
+function acquisition(
+	overrides: OptimizationOverride[],
+	lDensities: Map<number, number>[],
+	gDensities: Map<number, number>[]
+): number {
+	let score = 0;
+	for (let j = 0; j < overrides.length; j++) {
+		const v = overrides[j].value;
+		const l = lDensities[j]?.get(v) ?? Number.EPSILON;
+		const g = gDensities[j]?.get(v) ?? Number.EPSILON;
+		score += Math.log(l) - Math.log(g);
+	}
+	return score;
+}
+
 // Re-export the rng type alias so callers/tests don't reach into validation.
 export type { Rng };

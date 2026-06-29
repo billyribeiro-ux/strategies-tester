@@ -210,6 +210,51 @@ const OPERATORS: OperatorCapability[] = [
 	return { id: m.id, label: m.label, arity: m.arity, description: m.description };
 });
 
+/**
+ * Grammar extensions (spec §4b) — metadata for the richer rule constructs the
+ * builder offers beyond the plain binary/unary/range operators. These are NOT
+ * `Operator`s (so they live outside the typed `OPERATORS`/`Capabilities.operators`
+ * set), but the builder reads this list to label the new operand/leaf kinds and
+ * show their shape. Pure metadata; tests and editors import it directly.
+ *
+ * - `arity: 'operand'` — adds a new Operand kind (used inside any operand slot).
+ * - `arity: 'leaf'`    — adds a new ConditionLeaf kind (a whole condition row).
+ */
+export interface GrammarExtension {
+	/** Discriminant `kind` of the Operand or ConditionLeaf this describes. */
+	id: string;
+	label: string;
+	arity: 'operand' | 'leaf';
+	target: 'operand' | 'leaf';
+	description: string;
+}
+
+export const GRAMMAR_EXTENSIONS: readonly GrammarExtension[] = [
+	{
+		id: 'aggregate',
+		label: 'Aggregate of…',
+		arity: 'operand',
+		target: 'operand',
+		description:
+			'Reduces a series over a trailing window (highest / lowest / mean / sum), e.g. "highest high of the last 20 bars".'
+	},
+	{
+		id: 'persistence',
+		label: 'Holds for N bars',
+		arity: 'leaf',
+		target: 'leaf',
+		description: 'A comparison (>, ≥, <, ≤) that must hold on every one of the last N closed bars.'
+	},
+	{
+		id: 'sequence',
+		label: 'Then within N bars',
+		arity: 'leaf',
+		target: 'leaf',
+		description:
+			'An ordered setup: a first condition fires, then a second condition fires within N bars after it.'
+	}
+] as const;
+
 export const CAPABILITIES: Capabilities = {
 	schemaVersion: 1,
 	indicators: INDICATORS,
@@ -222,7 +267,8 @@ export const CAPABILITIES: Capabilities = {
 		{ id: '1h', label: '1 hour', seconds: 3600, intraday: true },
 		{ id: '4h', label: '4 hours', seconds: 14400, intraday: true },
 		{ id: '1d', label: 'Daily', seconds: 86400, intraday: false },
-		{ id: '1w', label: 'Weekly', seconds: 604800, intraday: false }
+		{ id: '1w', label: 'Weekly', seconds: 604800, intraday: false },
+		{ id: '1month', label: 'Monthly', seconds: 2592000, intraday: false }
 	],
 	priceSources: [...PRICE_FIELDS],
 	fillModels: [...FILL_MODELS],

@@ -49,11 +49,31 @@ export interface DateRange {
 	to: string;
 }
 
+/**
+ * Where the run's tradeable ticker set comes from.
+ *
+ * - `tickers` (default, omitted == this): use `Universe.tickers` verbatim — the
+ *   explicit, fully backward-compatible behaviour.
+ * - `index`: resolve point-in-time INDEX members at the run window via a
+ *   survivorship-free provider (e.g. FMP PIT). `Universe.tickers` is still kept
+ *   on the spec and used as a fallback/seed if resolution yields nothing.
+ */
+export type UniverseSource =
+	| { kind: 'tickers' }
+	| { kind: 'index'; provider: 'fmpPit'; index: string; maxSymbols?: number };
+
 export interface Universe {
 	tickers: string[];
 	timeframe: TimeframeId;
 	dateRange: DateRange;
 	session: SessionSpec;
+	/**
+	 * How the tradeable ticker set is resolved for the run. Omitted (or
+	 * `{ kind: 'tickers' }`) means use `tickers` verbatim — the default,
+	 * backward-compatible behaviour. `{ kind: 'index', ... }` resolves
+	 * point-in-time index members over the run window instead.
+	 */
+	source?: UniverseSource;
 	/** Optional buy-and-hold comparison ticker (e.g. 'SPY') overlaid on results. */
 	benchmark?: string;
 }
@@ -75,16 +95,44 @@ export interface IndicatorInstance {
 	priceSource: PriceField;
 	/** Optional user-facing label override (defaults to a derived label). */
 	label?: string;
+	/**
+	 * Multi-timeframe reference (spec §3 / §4a). When set to a HIGHER timeframe than
+	 * the universe's, the indicator is computed on resampled higher-timeframe bars
+	 * and aligned back to base bars with NO look-ahead: a higher-TF bar's value is
+	 * available at a base bar only AFTER that higher-TF bar has CLOSED. Omitted (or
+	 * equal to the universe timeframe) = current behaviour (computed on base bars).
+	 * A timeframe LOWER than the universe's is rejected by validation (it would
+	 * fabricate sub-bar data).
+	 */
+	timeframe?: TimeframeId;
 }
 
 // ---------------------------------------------------------------------------
 // Operands (discriminated union). `offset` = N bars ago (0 = current bar).
 // ---------------------------------------------------------------------------
 
+/**
+ * Reductions an `aggregate` operand can apply over its trailing window.
+ * - `highest` / `lowest`: extreme of the window
+ * - `mean`: arithmetic average
+ * - `sum`: total
+ */
+export type AggregateFn = 'highest' | 'lowest' | 'mean' | 'sum';
+
+export const AGGREGATE_FNS: readonly AggregateFn[] = ['highest', 'lowest', 'mean', 'sum'] as const;
+
 export type Operand =
 	| { kind: 'indicator'; ref: string; component?: string; offset: number }
 	| { kind: 'price'; field: PriceField; offset: number }
-	| { kind: 'constant'; value: number };
+	| { kind: 'constant'; value: number }
+	/**
+	 * Reduction of `source` over the trailing window of `window` bars ending
+	 * `offset` bars ago: it reads bars `[i-offset-window+1 .. i-offset]`. If any
+	 * index is < 0 or `source` resolves to `NaN` at any of them, the aggregate is
+	 * `NaN` (→ its leaf is false). `window` ≥ 1, `offset` ≥ 0. Enables e.g.
+	 * "close > highest high of the last 20 bars".
+	 */
+	| { kind: 'aggregate'; fn: AggregateFn; source: Operand; window: number; offset: number };
 
 export type OperandKind = Operand['kind'];
 
@@ -117,6 +165,16 @@ export const RANGE_OPERATORS: readonly RangeOperator[] = ['insideRange', 'outsid
 // Conditions & groups — fully nestable, unlimited depth/breadth
 // ---------------------------------------------------------------------------
 
+/** Comparison operators usable by a `persistence` leaf (ordered, non-cross). */
+export type PersistenceOperator = 'gt' | 'gte' | 'lt' | 'lte';
+
+export const PERSISTENCE_OPERATORS: readonly PersistenceOperator[] = [
+	'gt',
+	'gte',
+	'lt',
+	'lte'
+] as const;
+
 export type ConditionLeaf =
 	| { kind: 'binary'; id: string; left: Operand; op: BinaryOperator; right: Operand }
 	| { kind: 'unary'; id: string; operand: Operand; op: UnaryOperator; lookback: number }
@@ -127,6 +185,32 @@ export type ConditionLeaf =
 			op: RangeOperator;
 			lower: Operand;
 			upper: Operand;
+	  }
+	/**
+	 * True iff `(operand op threshold)` holds at EACH of the last `bars` closed
+	 * bars (`i`, `i-1`, …, `i-bars+1`). Any NaN operand/threshold or an
+	 * out-of-range index (e.g. `i-bars+1 < 0`) makes the whole leaf false.
+	 * `bars` ≥ 1. Enables e.g. "RSI > 70 for 3 consecutive bars".
+	 */
+	| {
+			kind: 'persistence';
+			id: string;
+			operand: Operand;
+			op: PersistenceOperator;
+			threshold: Operand;
+			bars: number;
+	  }
+	/**
+	 * True iff `second` is true at bar `i` AND `first` was true at some bar `t` in
+	 * `[i-withinBars, i-1]` (scanning strictly backwards — point-in-time only,
+	 * never the future). `withinBars` ≥ 1. Enables ordered multi-bar setups.
+	 */
+	| {
+			kind: 'sequence';
+			id: string;
+			first: ConditionLeaf;
+			second: ConditionLeaf;
+			withinBars: number;
 	  };
 
 export type LeafKind = ConditionLeaf['kind'];
@@ -164,7 +248,20 @@ export type PositionSizing =
 	| { mode: 'fixedShares'; shares: number }
 	| { mode: 'fixedNotional'; notional: number }
 	| { mode: 'percentEquity'; percent: number }
-	| { mode: 'riskBased'; riskPercent: number }; // requires a non-'none' stopLoss
+	| { mode: 'riskBased'; riskPercent: number } // requires a non-'none' stopLoss
+	| { mode: 'volatilityTarget'; targetVolPercent: number; atrRef: string }
+	/**
+	 * Fractional-Kelly sizing (§5). Sizes from the rolling stats of CLOSED trades
+	 * SO FAR in the run (point-in-time — never future trades): win rate
+	 * `W = wins/total`, payoff `R = avgWin/|avgLoss|`, Kelly `f* = max(0, W − (1−W)/R)`.
+	 * `shares = floor(equity × fraction × f* / fillPrice)`, ≥ 0. `fraction` in (0, 1]
+	 * (typically ≤ 0.5) scales the full-Kelly bet down for safety. During warmup
+	 * (fewer than 5 closed trades) or when `R`/avgLoss is undefined/0, `f*` is
+	 * treated as 0 → size 0 (conservative: trade only once an edge has been
+	 * observed). Leak-free: the aggregates read at entry include only already-closed
+	 * trades.
+	 */
+	| { mode: 'fractionalKelly'; fraction: number };
 
 export type SizingMode = PositionSizing['mode'];
 
@@ -185,6 +282,43 @@ export type TrailingStop =
 	| { mode: 'percent'; percent: number }
 	| { mode: 'atr'; atrRef: string; multiple: number };
 
+/**
+ * Trigger for a scale-out level (§4c). A level fires when price reaches a profit
+ * target expressed as either:
+ * - `rMultiple`: `r` units of initial risk in profit (entry ± r × |entry − stop|).
+ *   Requires a non-'none' stopLoss to define R; rejected by validation otherwise.
+ * - `percent`: `percent`% of the entry price in profit (entry ± entry × percent/100).
+ */
+export type ScaleOutTrigger =
+	| { kind: 'rMultiple'; r: number }
+	| { kind: 'percent'; percent: number };
+
+/**
+ * One scale-out level (§4c): when price reaches `trigger`, close `fraction` of
+ * the ORIGINAL position quantity (taken once, at the level price) and let the
+ * rest run. `fraction` is in (0, 1).
+ */
+export interface ScaleOutLevel {
+	trigger: ScaleOutTrigger;
+	/** Fraction of the ORIGINAL position qty closed at this level, in (0, 1). */
+	fraction: number;
+}
+
+/**
+ * Scale-out / partial-profit configuration (§4c). One or more ascending profit
+ * targets, each closing a fraction of the original position; whatever is left
+ * after all levels fire is the "runner", managed by the normal stop / target /
+ * trailing / signal logic. Omitted = no scale-out (today's behaviour).
+ *
+ * Partial closes are checked INTRABAR using only the current bar's OHLC (exactly
+ * like stops/targets — never the future), keeping the engine leak-free. The sum
+ * of all `fraction`s must be ≤ 1; a sum of exactly 1 leaves no runner (the last
+ * level fully closes the position).
+ */
+export interface ScaleOut {
+	levels: ScaleOutLevel[];
+}
+
 export type CommissionModel =
 	| { mode: 'none' }
 	| { mode: 'perShare'; perShare: number }
@@ -202,10 +336,128 @@ export interface Risk {
 	stopLoss: StopLoss;
 	takeProfit: TakeProfit;
 	trailingStop: TrailingStop;
+	/**
+	 * Scale-out / partial-profit lifecycle (§4c). Ascending profit targets, each
+	 * closing a fraction of the ORIGINAL position quantity, leaving a runner the
+	 * normal stop/target/trailing/signal logic manages. `undefined` = no scale-out
+	 * (today's behaviour). Checked intrabar with current-bar OHLC only (leak-free).
+	 */
+	scaleOut?: ScaleOut;
 	maxConcurrentPositions: number;
 	pyramiding: number; // max additional entries per open position (0 = none)
 	commission: CommissionModel;
 	slippage: SlippageModel;
+	/**
+	 * Short borrow cost (§ costs): annual borrow rate, in percent, charged on the
+	 * notional of any OPEN SHORT position for every bar it is held. `undefined`/`0`
+	 * = no borrow cost. Per-bar cost = shortNotional × (APR/100) ×
+	 * (timeframeSeconds / 31_557_600); it is summed over the bars held and deducted
+	 * from cash and the trade's P&L at close. Longs are unaffected. In [0, ∞).
+	 */
+	shortBorrowAPR?: number;
+	/**
+	 * Time exit: force-close an open position once it has been held this many bars,
+	 * filled look-ahead-safe at the next bar's open (same path as a signal exit).
+	 * `undefined`/`0` = no time limit. Positive integer.
+	 */
+	maxBarsInTrade?: number;
+	/**
+	 * Portfolio drawdown circuit-breaker. Once marked equity falls below the
+	 * running peak by at least this percent, ALL new entries are halted for the
+	 * rest of the run (open positions keep being managed/exited normally).
+	 * `undefined` = off. In (0, 100].
+	 */
+	maxDrawdownStopPercent?: number;
+	/**
+	 * Max portfolio heat: total open risk (sum of qty × |entry − stop| across open
+	 * positions, including the candidate) may not exceed this percent of current
+	 * equity. Entries with no stop are not constrained. `undefined` = off. In (0, 100].
+	 */
+	maxPortfolioHeatPercent?: number;
+	/**
+	 * §5 Correlation-exposure limit. Before opening a NEW position on ticker X, the
+	 * Pearson correlation of close-to-close returns between X and each currently-open
+	 * position on a DIFFERENT ticker Y is computed over the trailing
+	 * `correlationLookback` bars, aligned on the common timestamps that are ≤ the
+	 * entry decision time (point-in-time — never future bars). If `|corr|` with ANY
+	 * open position exceeds this threshold, the new entry is SKIPPED. Same-ticker
+	 * pyramiding is exempt. Pairs with fewer than a small floor of paired
+	 * observations are skipped (treated as allowed). `undefined` = off. In (0, 1].
+	 */
+	maxCorrelation?: number;
+	/**
+	 * §5 Lookback window (in bars) for the correlation-exposure limit's
+	 * close-to-close returns. Only consulted when `maxCorrelation` is set. Positive
+	 * integer; `undefined` defaults to 60 in the engine. Should be ≥ ~20 so the
+	 * correlation estimate is meaningful.
+	 */
+	correlationLookback?: number;
+	/**
+	 * §5 Margin / leverage. Maximum gross exposure as a multiple of equity: buying
+	 * power = equity × maxLeverage, and the resulting GROSS exposure
+	 * (Σ |qty × price| across all open positions including the candidate) may not
+	 * exceed it — entries (and pyramided adds) that would breach it are SKIPPED.
+	 * `undefined`/`1` = cash-only (cannot exceed equity), exactly today's behaviour.
+	 * The portfolio heat cap is independent and still enforced. ≥ 1.
+	 */
+	maxLeverage?: number;
+	/**
+	 * §5 Margin interest: annual rate, in percent, charged on the cash BORROWED to
+	 * finance LONG positions on margin (when `maxLeverage > 1`). At entry the
+	 * borrowed cash attributed to a long position is
+	 * `min(entryNotional, max(0, grossExposureAfterEntry − equityAtEntry))`; at close
+	 * it accrues `borrowedAttributed × (APR/100) × (timeframeSeconds/31_557_600) ×
+	 * barsHeld`, deducted from cash and the trade's P&L (mirrors the short-borrow
+	 * accrual). Shorts are unaffected here. `undefined`/`0` = no interest; with
+	 * `maxLeverage = 1` the borrowed amount is 0 so there is no change. In [0, ∞).
+	 */
+	marginInterestAPR?: number;
+	/**
+	 * §4c Re-entry cooldown. After a position on a ticker CLOSES at bar index X, any
+	 * NEW entry on that SAME ticker is blocked until the bar index is strictly
+	 * greater than `X + reentryCooldownBars` (i.e. the cooldown spans the next
+	 * `reentryCooldownBars` bars). Pyramided adds to an already-open position are
+	 * exempt (they are not new entries). Leak-free: the gate reads only the last
+	 * exit bar index, which is always in the past. `undefined`/`0` = off. Positive
+	 * integer.
+	 */
+	reentryCooldownBars?: number;
+	/**
+	 * §4c Sector exposure cap. The maximum number of CONCURRENTLY-OPEN positions
+	 * allowed in any one sector. Before opening a NEW position on ticker X, the
+	 * candidate's sector is resolved from the run's injected sector map and the
+	 * count of currently-open positions in that sector is computed; if opening the
+	 * new position would exceed this cap, the entry is SKIPPED. Pyramided adds are
+	 * exempt (they do not add a new symbol to the sector). Requires a sector map to
+	 * be supplied to `runBacktest` (the API route fetches it); if the cap is set but
+	 * no map/sector is available, the entry is allowed and a one-time warning is
+	 * surfaced. `undefined`/`0` = off. Positive integer.
+	 */
+	maxPositionsPerSector?: number;
+	/**
+	 * §5 Hard-to-borrow symbols. Tickers that are especially costly/scarce to
+	 * borrow when shorted. A SHORT position whose ticker is in this list accrues an
+	 * ADDITIONAL borrow charge at `hardToBorrowAPR` ON TOP OF the regular
+	 * `shortBorrowAPR`, using the same per-bar-held accrual formula at close. Longs
+	 * and non-listed shorts are unaffected. Empty/omitted = no symbol is treated as
+	 * hard-to-borrow. Symbols are matched case-insensitively.
+	 */
+	hardToBorrowSymbols?: string[];
+	/**
+	 * §5 Hard-to-borrow surcharge: an annual rate, in percent, charged on the entry
+	 * notional of a SHORT position whose ticker is in `hardToBorrowSymbols`, for
+	 * every bar it is held — IN ADDITION to `shortBorrowAPR`. Per-bar cost =
+	 * shortNotional × (APR/100) × (timeframeSeconds / 31_557_600), summed over bars
+	 * held and deducted from cash and the trade's P&L at close (mirrors the regular
+	 * short-borrow accrual). `undefined`/`0` = no surcharge. In [0, ∞).
+	 *
+	 * Cross-margin / portfolio-margin netting is intentionally OUT OF SCOPE here:
+	 * netting borrow against offsetting long inventory or a prime-broker locate pool
+	 * needs a full margin-netting model across the whole portfolio, which is well
+	 * beyond this engine's per-position accounting (each position is settled on its
+	 * own notional and bars held). The HTB surcharge is a per-position approximation.
+	 */
+	hardToBorrowAPR?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,15 +473,73 @@ export interface Risk {
  * - `signalPrice`: fill at the operand/price that produced the signal.
  */
 export type FillModel = 'nextOpen' | 'close' | 'signalPrice';
-export type OrderType = 'market' | 'limit' | 'stop';
+
+/**
+ * Entry order type (spec §5). Decisions use the SIGNAL bar's close (the reference,
+ * known at index ≤ idx); the order is resolved against ONLY the NEXT bar (idx+1),
+ * so every type is leak-free. The default `market` is unchanged.
+ *
+ * - `market`: fill at the next bar (the configured `fillOn` price; default open).
+ * - `limit`: rest a better-price limit for the next bar. LONG fills only if
+ *   next.low ≤ limit, at min(next.open, limit); SHORT mirrors. With `limitOffsetPercent`
+ *   the limit sits that % BELOW (long) / ABOVE (short) the signal close (default 0 = at close).
+ * - `stop`: rest a breakout stop for the next bar. LONG fills only if next.high ≥ trigger,
+ *   at max(next.open, trigger); SHORT mirrors. `limitOffsetPercent` moves the trigger that %
+ *   ABOVE (long) / BELOW (short) the signal close (default 0 = at close).
+ * - `stopLimit`: a stop TRIGGER (close × (1 ± off)) with a limit CAP one further
+ *   offset BEYOND it (cap = trigger × (1 ± off) — a SECOND band of `limitOffsetPercent`).
+ *   LONG: fills only if next.high ≥ trigger AND the would-be fill max(next.open, trigger) ≤ cap,
+ *   at min(max(next.open, trigger), cap); SHORT mirrors. A gap past the cap → no fill (expires).
+ * - `moc` (market-on-close): always fills (if a next bar exists) at next bar's CLOSE.
+ * - `loc` (limit-on-close): fills at next bar's CLOSE only if it satisfies the limit
+ *   (LONG: next.close ≤ close × (1 − off/100); SHORT: next.close ≥ close × (1 + off/100));
+ *   otherwise expires.
+ */
+export type OrderType = 'market' | 'limit' | 'stop' | 'stopLimit' | 'moc' | 'loc';
 
 export const FILL_MODELS: readonly FillModel[] = ['nextOpen', 'close', 'signalPrice'] as const;
-export const ORDER_TYPES: readonly OrderType[] = ['market', 'limit', 'stop'] as const;
+export const ORDER_TYPES: readonly OrderType[] = [
+	'market',
+	'limit',
+	'stop',
+	'stopLimit',
+	'moc',
+	'loc'
+] as const;
 
 export interface Execution {
 	fillOn: FillModel;
 	orderType: OrderType;
+	/**
+	 * Limit / stop offset, in percent (≥ 0, default 0). The order's reference price
+	 * is the SIGNAL bar's close, shifted by this % in the favorable (limit) /
+	 * trigger (stop) direction:
+	 * - `limit`: LONG limit = close × (1 − off/100); SHORT limit = close × (1 + off/100).
+	 * - `stop`: LONG trigger = close × (1 + off/100); SHORT trigger = close × (1 − off/100).
+	 * - `stopLimit`: trigger as for `stop`, PLUS a limit cap one further offset beyond
+	 *   the trigger (cap = trigger × (1 ± off/100) — a SECOND band of this same percent).
+	 * - `loc`: LONG limit = close × (1 − off/100); SHORT limit = close × (1 + off/100).
+	 * `0` (or undefined) means the reference is the signal close itself, preserving the
+	 * original `limit`/`stop` behaviour exactly. Ignored by `market` and `moc`.
+	 */
+	limitOffsetPercent?: number;
+	/**
+	 * Liquidity cap (§2.3): max share of a bar's volume a single fill may take,
+	 * as a percentage in (0, 100]. Caps filled qty at `floor(bar.volume * pct/100)`.
+	 * `undefined` means no cap (fills are not constrained by bar volume).
+	 */
+	maxBarVolumePct?: number;
 }
+
+/**
+ * §5 Bracket / OCO: a configured entry (`Execution.orderType`) combined with a
+ * non-'none' `Risk.stopLoss` and `Risk.takeProfit` already forms a BRACKET order —
+ * the entry fills, then the stop and target bracket the position. The two
+ * protective legs are mutually exclusive (one-cancels-other): the engine checks
+ * them intrabar each bar and the FIRST to trigger fully closes the position (stop
+ * takes precedence when both could fire in the same bar — conservative), so the
+ * other is implicitly cancelled. No separate OCO order type is needed.
+ */
 
 // ---------------------------------------------------------------------------
 // Top-level spec

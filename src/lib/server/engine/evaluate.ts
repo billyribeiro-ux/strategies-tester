@@ -47,6 +47,37 @@ export function resolveOperand(operand: Operand, ctx: EvalContext, i: number): n
 			const v = series[idx];
 			return typeof v === 'number' ? v : NaN;
 		}
+		case 'aggregate': {
+			// Reduce `source` over bars [end-window+1 .. end] where end = i-offset.
+			// Any index < 0 or any NaN source value poisons the whole result to NaN
+			// (→ leaf false). Reading only bars <= i-offset <= i keeps it point-in-time.
+			if (operand.window < 1) return NaN;
+			const end = i - operand.offset;
+			const start = end - operand.window + 1;
+			if (start < 0) return NaN;
+			let sum = 0;
+			let hi = -Infinity;
+			let lo = Infinity;
+			for (let j = start; j <= end; j++) {
+				const v = resolveOperand(operand.source, ctx, j);
+				if (Number.isNaN(v)) return NaN;
+				sum += v;
+				if (v > hi) hi = v;
+				if (v < lo) lo = v;
+			}
+			switch (operand.fn) {
+				case 'highest':
+					return hi;
+				case 'lowest':
+					return lo;
+				case 'mean':
+					return sum / operand.window;
+				case 'sum':
+					return sum;
+				default:
+					return assertNever(operand.fn, 'Unknown aggregate fn');
+			}
+		}
 		default:
 			return assertNever(operand, 'Unknown operand kind');
 	}
@@ -65,8 +96,36 @@ function evaluateNode(node: RuleNode, ctx: EvalContext, i: number): boolean {
 	return isGroup(node) ? evaluateGroup(node, ctx, i) : evaluateLeaf(node, ctx, i);
 }
 
+/**
+ * Max nesting allowed for `sequence` leaves (a sequence whose `first`/`second`
+ * are themselves sequences). Bounds recursion so a pathological/hostile spec
+ * cannot blow the stack; specs this deep are rejected by validate-spec anyway.
+ */
+const MAX_SEQUENCE_DEPTH = 8;
+
+/** Apply an ordered (non-cross) comparison; both inputs must be finite. */
+function compareOrdered(l: number, r: number, op: 'gt' | 'gte' | 'lt' | 'lte'): boolean {
+	if (Number.isNaN(l) || Number.isNaN(r)) return false;
+	switch (op) {
+		case 'gt':
+			return l > r;
+		case 'gte':
+			return l >= r;
+		case 'lt':
+			return l < r;
+		case 'lte':
+			return l <= r;
+		default:
+			return false; // unreachable: PersistenceOperator is exhaustive above
+	}
+}
+
 /** Evaluate a single condition leaf at bar `i`. */
 export function evaluateLeaf(leaf: ConditionLeaf, ctx: EvalContext, i: number): boolean {
+	return evaluateLeafAt(leaf, ctx, i, 0);
+}
+
+function evaluateLeafAt(leaf: ConditionLeaf, ctx: EvalContext, i: number, depth: number): boolean {
 	switch (leaf.kind) {
 		case 'binary': {
 			const l = resolveOperand(leaf.left, ctx, i);
@@ -125,6 +184,31 @@ export function evaluateLeaf(leaf: ConditionLeaf, ctx: EvalContext, i: number): 
 				default:
 					return false; // unreachable: RangeOperator is exhaustive above
 			}
+		}
+		case 'persistence': {
+			// (operand op threshold) must hold at EACH of the last `bars` closed
+			// bars: i, i-1, …, i-bars+1. Any out-of-range index or NaN → false.
+			if (leaf.bars < 1) return false;
+			const earliest = i - leaf.bars + 1;
+			if (earliest < 0) return false;
+			for (let j = i; j >= earliest; j--) {
+				const l = resolveOperand(leaf.operand, ctx, j);
+				const r = resolveOperand(leaf.threshold, ctx, j);
+				if (!compareOrdered(l, r, leaf.op)) return false;
+			}
+			return true;
+		}
+		case 'sequence': {
+			// `second` true at i AND `first` true at some bar in [i-withinBars, i-1].
+			// Scan strictly backwards (never reads bars > i). Recursion is bounded.
+			if (depth >= MAX_SEQUENCE_DEPTH) return false;
+			if (leaf.withinBars < 1) return false;
+			if (!evaluateLeafAt(leaf.second, ctx, i, depth + 1)) return false;
+			const earliest = Math.max(0, i - leaf.withinBars);
+			for (let t = i - 1; t >= earliest; t--) {
+				if (evaluateLeafAt(leaf.first, ctx, t, depth + 1)) return true;
+			}
+			return false;
 		}
 		default:
 			return assertNever(leaf, 'Unknown leaf kind');

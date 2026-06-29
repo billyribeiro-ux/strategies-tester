@@ -104,6 +104,20 @@ function makeResult(overrides: Partial<BacktestResult> = {}): BacktestResult {
 		],
 		distribution: [{ lower: -0.1, upper: 0, count: 1 }],
 		warnings: ['heads up'],
+		audit: {
+			fillModel: 'nextOpen',
+			orderType: 'market',
+			commissionMode: 'none',
+			slippageMode: 'none',
+			initialCapital: 100000,
+			liquidityCapPct: null,
+			timeframe: '1d',
+			bars: 3,
+			tickers: ['AAPL'],
+			lookaheadOptimistic: false,
+			schemaVersion: 1,
+			computedAt: '2024-12-31T00:00:00.000Z'
+		},
 		computedAt: '2024-12-31T00:00:00.000Z',
 		...overrides
 	};

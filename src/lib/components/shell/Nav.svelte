@@ -13,6 +13,8 @@
 		{ href: '/backtest', label: 'Builder' },
 		{ href: '/strategies', label: 'Strategies' },
 		{ href: '/optimize', label: 'Optimize' },
+		{ href: '/paper', label: 'Paper' },
+		{ href: '/universe', label: 'Universe' },
 		{ href: '/settings', label: 'Settings' }
 	];
 

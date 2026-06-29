@@ -2,8 +2,8 @@
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import type { PageData } from './$types';
-	import { createApiClient, ApiError } from '$lib/api/client';
-	import type { OptimizationResult, WalkForwardResult } from '$lib/types';
+	import { createApiClient, ApiError, type OptimizeMode } from '$lib/api/client';
+	import type { OptimizationResult, WalkForwardResult, ValidationReport } from '$lib/types';
 	import {
 		Button,
 		Callout,
@@ -13,7 +13,8 @@
 		LoadingState,
 		Select
 	} from '$lib/components/ui';
-	import { Sliders, Play, WarningCircle, ChartLineUp } from 'phosphor-svelte';
+	import { ValidationPanel } from '$lib/components/validation';
+	import { Sliders, Play, WarningCircle, ChartLineUp, ShieldCheck } from 'phosphor-svelte';
 	import { formatPercent, formatSignedPercent, formatRatio } from '$lib/utils/format';
 
 	let { data }: { data: PageData } = $props();
@@ -76,6 +77,14 @@
 	];
 	let sortMetric = $state('totalReturn');
 
+	const searchModeOptions = [
+		{ value: 'grid', label: 'Grid (exhaustive)' },
+		{ value: 'random', label: 'Random search' },
+		{ value: 'genetic', label: 'Genetic search' },
+		{ value: 'bayesian', label: 'Bayesian search' }
+	];
+	let searchMode = $state<OptimizeMode>('grid');
+
 	let running = $state(false);
 	let runError = $state<string | null>(null);
 	let result = $state<OptimizationResult | null>(null);
@@ -86,6 +95,11 @@
 	let wfError = $state<string | null>(null);
 	let wf = $state<WalkForwardResult | null>(null);
 
+	// Validation state (DSR / PBO / plateau / Monte-Carlo — the trust gate).
+	let validating = $state(false);
+	let valError = $state<string | null>(null);
+	let validation = $state<ValidationReport | null>(null);
+
 	// Clear stale results when the strategy selection changes.
 	$effect(() => {
 		void selectedId;
@@ -94,6 +108,8 @@
 			runError = null;
 			wf = null;
 			wfError = null;
+			validation = null;
+			valError = null;
 		});
 	});
 
@@ -130,11 +146,28 @@
 		running = true;
 		result = null;
 		try {
-			result = await api.optimize({ base: selected.spec, params, sortMetric });
+			result = await api.optimize(
+				{ base: selected.spec, params, sortMetric },
+				{ mode: searchMode }
+			);
 		} catch (e) {
 			runError = e instanceof ApiError ? e.message : 'Optimization failed.';
 		} finally {
 			running = false;
+		}
+	}
+
+	async function validate() {
+		if (!selected || !canRun) return;
+		valError = null;
+		validating = true;
+		validation = null;
+		try {
+			validation = await api.validateOptimization({ base: selected.spec, params, sortMetric });
+		} catch (e) {
+			valError = e instanceof ApiError ? e.message : 'Validation failed.';
+		} finally {
+			validating = false;
 		}
 	}
 
@@ -212,12 +245,21 @@
 						{/each}
 					</fieldset>
 
-					<Select label="Rank by" options={sortOptions} bind:value={sortMetric} />
+					<div class="dual">
+						<Select label="Rank by" options={sortOptions} bind:value={sortMetric} />
+						<Select label="Search method" options={searchModeOptions} bind:value={searchMode} />
+					</div>
 
 					<div class="run-row">
 						<Button variant="primary" onclick={run} loading={running} disabled={!canRun}>
 							{#snippet icon()}<Play size={16} weight="fill" />{/snippet}
-							Run {comboCount} backtest{comboCount === 1 ? '' : 's'}
+							{searchMode === 'grid'
+								? `Run ${comboCount} backtest${comboCount === 1 ? '' : 's'}`
+								: `Run ${searchMode} search`}
+						</Button>
+						<Button variant="secondary" onclick={validate} loading={validating} disabled={!canRun}>
+							{#snippet icon()}<ShieldCheck size={16} />{/snippet}
+							Validate
 						</Button>
 						<label class="wf-windows">
 							Walk-forward windows
@@ -298,6 +340,22 @@
 				</Card>
 			{/if}
 		{/if}
+		{#if valError}
+			<Callout tone="danger" title="Validation failed">
+				{#snippet icon()}<WarningCircle size={16} weight="fill" />{/snippet}
+				{valError}
+				{#if /api key/i.test(valError)}
+					— <a href="/settings">Add your FMP key in Settings</a>.
+				{/if}
+			</Callout>
+		{/if}
+
+		{#if validating || validation}
+			<Card>
+				<ValidationPanel report={validation} loading={validating} />
+			</Card>
+		{/if}
+
 		{#if wfError}
 			<Callout tone="danger" title="Walk-forward failed">
 				{#snippet icon()}<WarningCircle size={16} weight="fill" />{/snippet}
@@ -439,6 +497,11 @@
 	}
 	.vals:disabled {
 		opacity: 0.5;
+	}
+	.dual {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--sp-3);
 	}
 	.run-row {
 		display: flex;

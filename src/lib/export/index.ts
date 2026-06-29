@@ -19,6 +19,7 @@ export {
 	buildTearsheetHtml,
 	exportTearsheet
 } from './tearsheet';
+export { printHtml, printTearsheet } from './print';
 export { computeTotals, LEDGER_COLUMNS } from './ledger';
 export type { LedgerColumn, LedgerTotals, ColumnType } from './ledger';
 

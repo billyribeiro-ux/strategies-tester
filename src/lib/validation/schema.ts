@@ -8,50 +8,84 @@
  */
 
 import { z } from 'zod';
-import type { ConditionGroup, RuleNode, StrategySpec } from '$lib/types';
+import type { ConditionGroup, ConditionLeaf, Operand, RuleNode, StrategySpec } from '$lib/types';
 
 const priceField = z.enum(['open', 'high', 'low', 'close', 'volume', 'hl2', 'hlc3', 'ohlc4']);
 const offset = z.number().int().min(0);
+const aggregateFn = z.enum(['highest', 'lowest', 'mean', 'sum']);
 
-const operandSchema = z.discriminatedUnion('kind', [
-	z.object({
-		kind: z.literal('indicator'),
-		ref: z.string().min(1),
-		component: z.string().optional(),
-		offset
-	}),
-	z.object({ kind: z.literal('price'), field: priceField, offset }),
-	z.object({ kind: z.literal('constant'), value: z.number().finite() })
-]);
+// Recursive: an `aggregate` operand nests another `Operand` as its `source`.
+// `z.lazy` defers evaluation so the schema can reference itself; a plain
+// `union` (not `discriminatedUnion`) is required because lazy members can't be
+// part of a discriminated union.
+const operandSchema: z.ZodType<Operand> = z.lazy(() =>
+	z.union([
+		z.object({
+			kind: z.literal('indicator'),
+			ref: z.string().min(1),
+			component: z.string().optional(),
+			offset
+		}),
+		z.object({ kind: z.literal('price'), field: priceField, offset }),
+		z.object({ kind: z.literal('constant'), value: z.number().finite() }),
+		z.object({
+			kind: z.literal('aggregate'),
+			fn: aggregateFn,
+			source: operandSchema,
+			window: z.number().int().min(1),
+			offset
+		})
+	])
+);
 
 const binaryOperator = z.enum(['crossover', 'crossunder', 'gt', 'gte', 'lt', 'lte', 'eq']);
 const unaryOperator = z.enum(['rising', 'falling']);
 const rangeOperator = z.enum(['insideRange', 'outsideRange']);
+const persistenceOperator = z.enum(['gt', 'gte', 'lt', 'lte']);
 
-const conditionLeafSchema = z.discriminatedUnion('kind', [
-	z.object({
-		kind: z.literal('binary'),
-		id: z.string(),
-		left: operandSchema,
-		op: binaryOperator,
-		right: operandSchema
-	}),
-	z.object({
-		kind: z.literal('unary'),
-		id: z.string(),
-		operand: operandSchema,
-		op: unaryOperator,
-		lookback: z.number().int().min(1)
-	}),
-	z.object({
-		kind: z.literal('range'),
-		id: z.string(),
-		operand: operandSchema,
-		op: rangeOperator,
-		lower: operandSchema,
-		upper: operandSchema
-	})
-]);
+// Recursive: a `sequence` leaf nests two `ConditionLeaf` children. Lazy +
+// `union` for the same reason as `operandSchema`.
+const conditionLeafSchema: z.ZodType<ConditionLeaf> = z.lazy(() =>
+	z.union([
+		z.object({
+			kind: z.literal('binary'),
+			id: z.string(),
+			left: operandSchema,
+			op: binaryOperator,
+			right: operandSchema
+		}),
+		z.object({
+			kind: z.literal('unary'),
+			id: z.string(),
+			operand: operandSchema,
+			op: unaryOperator,
+			lookback: z.number().int().min(1)
+		}),
+		z.object({
+			kind: z.literal('range'),
+			id: z.string(),
+			operand: operandSchema,
+			op: rangeOperator,
+			lower: operandSchema,
+			upper: operandSchema
+		}),
+		z.object({
+			kind: z.literal('persistence'),
+			id: z.string(),
+			operand: operandSchema,
+			op: persistenceOperator,
+			threshold: operandSchema,
+			bars: z.number().int().min(1)
+		}),
+		z.object({
+			kind: z.literal('sequence'),
+			id: z.string(),
+			first: conditionLeafSchema,
+			second: conditionLeafSchema,
+			withinBars: z.number().int().min(1)
+		})
+	])
+);
 
 const conditionGroupSchema: z.ZodType<ConditionGroup> = z.lazy(() =>
 	z.object({
@@ -73,7 +107,11 @@ const indicatorInstanceSchema = z.object({
 	type: z.string().min(1),
 	params: z.record(z.string(), paramValue),
 	priceSource: priceField,
-	label: z.string().optional()
+	label: z.string().optional(),
+	// Optional multi-timeframe reference (spec §3). Structural check only: must be a
+	// non-empty timeframe id; the "non-lower than universe" rule is semantic and
+	// lives in validate-spec.ts.
+	timeframe: z.string().min(1).optional()
 });
 
 const sessionSchema = z.discriminatedUnion('kind', [
@@ -87,11 +125,22 @@ const sessionSchema = z.discriminatedUnion('kind', [
 	})
 ]);
 
+const universeSourceSchema = z.union([
+	z.object({ kind: z.literal('tickers') }),
+	z.object({
+		kind: z.literal('index'),
+		provider: z.literal('fmpPit'),
+		index: z.string().min(1),
+		maxSymbols: z.number().int().positive().optional()
+	})
+]);
+
 const universeSchema = z.object({
 	tickers: z.array(z.string()),
 	timeframe: z.string().min(1),
 	dateRange: z.object({ from: z.string(), to: z.string() }),
 	session: sessionSchema,
+	source: universeSourceSchema.optional(),
 	benchmark: z.string().optional()
 });
 
@@ -99,7 +148,13 @@ const positionSizingSchema = z.discriminatedUnion('mode', [
 	z.object({ mode: z.literal('fixedShares'), shares: z.number().positive() }),
 	z.object({ mode: z.literal('fixedNotional'), notional: z.number().positive() }),
 	z.object({ mode: z.literal('percentEquity'), percent: z.number().positive() }),
-	z.object({ mode: z.literal('riskBased'), riskPercent: z.number().positive() })
+	z.object({ mode: z.literal('riskBased'), riskPercent: z.number().positive() }),
+	z.object({
+		mode: z.literal('volatilityTarget'),
+		targetVolPercent: z.number().positive(),
+		atrRef: z.string().min(1)
+	}),
+	z.object({ mode: z.literal('fractionalKelly'), fraction: z.number().gt(0).max(1) })
 ]);
 
 const stopLossSchema = z.discriminatedUnion('mode', [
@@ -122,6 +177,22 @@ const trailingStopSchema = z.discriminatedUnion('mode', [
 	z.object({ mode: z.literal('atr'), atrRef: z.string().min(1), multiple: z.number().positive() })
 ]);
 
+// Scale-out / partial-profit (§4c). Each level's fraction is in (0, 1); the
+// rMultiple-needs-a-stop and sum ≤ 1 rules are semantic and live in validate-spec.ts.
+const scaleOutTriggerSchema = z.discriminatedUnion('kind', [
+	z.object({ kind: z.literal('rMultiple'), r: z.number().positive() }),
+	z.object({ kind: z.literal('percent'), percent: z.number().positive() })
+]);
+
+const scaleOutSchema = z.object({
+	levels: z.array(
+		z.object({
+			trigger: scaleOutTriggerSchema,
+			fraction: z.number().gt(0).lt(1)
+		})
+	)
+});
+
 const commissionSchema = z.discriminatedUnion('mode', [
 	z.object({ mode: z.literal('none') }),
 	z.object({ mode: z.literal('perShare'), perShare: z.number().min(0) }),
@@ -141,15 +212,32 @@ const riskSchema = z.object({
 	stopLoss: stopLossSchema,
 	takeProfit: takeProfitSchema,
 	trailingStop: trailingStopSchema,
+	scaleOut: scaleOutSchema.optional(),
 	maxConcurrentPositions: z.number().int().min(1),
 	pyramiding: z.number().int().min(0),
 	commission: commissionSchema,
-	slippage: slippageSchema
+	slippage: slippageSchema,
+	shortBorrowAPR: z.number().min(0).optional(),
+	maxBarsInTrade: z.number().int().positive().optional(),
+	maxDrawdownStopPercent: z.number().gt(0).max(100).optional(),
+	maxPortfolioHeatPercent: z.number().gt(0).max(100).optional(),
+	maxCorrelation: z.number().gt(0).max(1).optional(),
+	correlationLookback: z.number().int().positive().optional(),
+	maxLeverage: z.number().min(1).optional(),
+	marginInterestAPR: z.number().min(0).optional(),
+	reentryCooldownBars: z.number().int().positive().optional(),
+	maxPositionsPerSector: z.number().int().positive().optional(),
+	hardToBorrowSymbols: z.array(z.string()).optional(),
+	hardToBorrowAPR: z.number().min(0).optional()
 });
 
 const executionSchema = z.object({
 	fillOn: z.enum(['nextOpen', 'close', 'signalPrice']),
-	orderType: z.enum(['market', 'limit', 'stop'])
+	orderType: z.enum(['market', 'limit', 'stop', 'stopLimit', 'moc', 'loc']),
+	// §5 Limit/stop offset, in percent (≥ 0). 0/undefined = reference is the signal
+	// close (back-compat for plain limit/stop). Semantics live in validate-spec.ts.
+	limitOffsetPercent: z.number().min(0).optional(),
+	maxBarVolumePct: z.number().gt(0).max(100).optional()
 });
 
 export const strategySpecSchema: z.ZodType<StrategySpec> = z.object({

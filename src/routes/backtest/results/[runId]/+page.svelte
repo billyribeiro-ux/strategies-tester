@@ -1,11 +1,24 @@
 <script lang="ts">
+	import type { ComponentProps } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
-	import { ArrowLeft, Warning, ChartLine, ChartBar, CalendarBlank, Table } from 'phosphor-svelte';
-	import type { Trade } from '$lib/types';
-	import { Panel, Callout, ErrorState, EmptyState } from '$lib/components/ui';
+	import {
+		ArrowLeft,
+		Warning,
+		ChartLine,
+		ChartBar,
+		CalendarBlank,
+		Table,
+		ShieldCheck,
+		ChartPolar
+	} from 'phosphor-svelte';
+	import type { Trade, ValidationReport } from '$lib/types';
+	import { Panel, Callout, ErrorState, EmptyState, Button } from '$lib/components/ui';
+	import { ValidationPanel } from '$lib/components/validation';
+	import { createApiClient, ApiError } from '$lib/api/client';
 	import { formatDateTime } from '$lib/utils/format';
 
 	import SummaryCards from '$lib/components/results/SummaryCards.svelte';
+	import AnalyticsPanel from '$lib/components/results/AnalyticsPanel.svelte';
 	import TradeTable from '$lib/components/results/TradeTable.svelte';
 	import ResultsToolbar from '$lib/components/results/ResultsToolbar.svelte';
 	import PriceChartPanel from '$lib/components/results/PriceChartPanel.svelte';
@@ -22,11 +35,70 @@
 	let { data }: Props = $props();
 
 	const result = $derived(data.result);
+	const api = createApiClient();
 
 	// Trades shown by the table after filtering/sorting — exports use these.
 	let filteredTrades = $state<Trade[]>([]);
 	function handleFilteredChange(trades: Trade[]) {
 		filteredTrades = trades;
+	}
+
+	// Statistical validation (Deflated Sharpe + Monte-Carlo) for this run.
+	let validating = $state(false);
+	let valError = $state<string | null>(null);
+	let validation = $state<ValidationReport | null>(null);
+
+	async function runValidation() {
+		if (!result) return;
+		valError = null;
+		validating = true;
+		validation = null;
+		try {
+			validation = await api.validateStrategy(result.spec);
+		} catch (e) {
+			valError = e instanceof ApiError ? e.message : 'Validation failed.';
+		} finally {
+			validating = false;
+		}
+	}
+
+	// Performance analytics (spec §7) for this run — loaded on demand from
+	// /api/analytics. We call fetch directly (not the api client) and parse the
+	// body as text → JSON to dodge the SSR content-type header restriction.
+	type AnalyticsView = ComponentProps<typeof AnalyticsPanel>['analytics'];
+	let analyticsLoading = $state(false);
+	let analyticsError = $state<string | null>(null);
+	let analytics = $state<AnalyticsView>(null);
+
+	async function loadAnalytics() {
+		if (!result) return;
+		analyticsError = null;
+		analyticsLoading = true;
+		analytics = null;
+		try {
+			const res = await fetch(`/api/analytics?runId=${encodeURIComponent(result.runId)}`);
+			const text = await res.text().catch(() => '');
+			let payload: unknown = text.length ? text : undefined;
+			if (text.length) {
+				try {
+					payload = JSON.parse(text);
+				} catch {
+					payload = text;
+				}
+			}
+			if (!res.ok) {
+				const message =
+					payload && typeof payload === 'object' && 'message' in payload
+						? String((payload as { message: unknown }).message)
+						: `Request failed (${res.status})`;
+				throw new Error(message);
+			}
+			analytics = payload as AnalyticsView;
+		} catch (e) {
+			analyticsError = e instanceof Error ? e.message : 'Analytics failed.';
+		} finally {
+			analyticsLoading = false;
+		}
 	}
 
 	function backToBuilder() {
@@ -109,6 +181,54 @@
 		<Panel title="Price chart">
 			{#snippet icon()}<ChartLine size={18} />{/snippet}
 			<PriceChartPanel {result} />
+		</Panel>
+
+		<Panel title="Statistical validation">
+			{#snippet icon()}<ShieldCheck size={18} />{/snippet}
+			{#if !validation && !validating}
+				<div class="validate-cta">
+					<p>
+						Stress-test this run for overfitting: Deflated Sharpe, Monte-Carlo trade-order and
+						bootstrap spreads, and a randomized-entry null baseline.
+					</p>
+					<Button variant="primary" onclick={runValidation}>
+						{#snippet icon()}<ShieldCheck size={16} />{/snippet}
+						Run validation
+					</Button>
+				</div>
+			{/if}
+			{#if valError}
+				<Callout tone="danger" title="Validation failed">
+					{#snippet icon()}<Warning size={16} weight="fill" />{/snippet}
+					{valError}
+					{#if /api key/i.test(valError)}
+						— <a href="/settings">Add your FMP key in Settings</a>.
+					{/if}
+				</Callout>
+			{/if}
+			{#if validating || validation}
+				<ValidationPanel report={validation} loading={validating} />
+			{/if}
+		</Panel>
+
+		<Panel title="Performance analytics">
+			{#snippet icon()}<ChartPolar size={18} />{/snippet}
+			{#if !analytics && !analyticsLoading && !analyticsError}
+				<div class="validate-cta">
+					<p>
+						Tail risk and drawdown shape: CVaR, ulcer index, Calmar, Omega, time underwater and
+						losing-streak length, with attribution by symbol, side and exit reason plus per-year
+						returns.
+					</p>
+					<Button variant="primary" onclick={loadAnalytics}>
+						{#snippet icon()}<ChartPolar size={16} />{/snippet}
+						Load analytics
+					</Button>
+				</div>
+			{/if}
+			{#if analyticsLoading || analytics || analyticsError}
+				<AnalyticsPanel {analytics} loading={analyticsLoading} error={analyticsError} />
+			{/if}
 		</Panel>
 
 		<Panel title="Trade ledger">
@@ -195,5 +315,17 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
+	}
+	.validate-cta {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-4);
+		flex-wrap: wrap;
+	}
+	.validate-cta p {
+		font-size: var(--fs-sm);
+		color: var(--c-text-muted);
+		max-width: 40rem;
 	}
 </style>

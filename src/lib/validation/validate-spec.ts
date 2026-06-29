@@ -39,6 +39,12 @@ interface Ctx {
 	capByType: Map<string, IndicatorCapability>;
 	offeredOperators: Set<string>;
 	timeframeIds: Set<string>;
+	/** Timeframe id → its length in seconds (for ordering MTF references). */
+	timeframeSeconds: Map<string, number>;
+	/** The universe timeframe id, against which MTF references are ordered. */
+	universeTimeframe: string;
+	/** The short-entry rule group, so risk checks can tell if the strategy shorts. */
+	shortEntry: ConditionGroup;
 }
 
 function add(ctx: Ctx, severity: Severity, path: string, message: string, nodeId?: string) {
@@ -53,7 +59,10 @@ export function validateSpec(spec: StrategySpec, capabilities: Capabilities): Sp
 		indById: new Map(spec.indicators.map((i) => [i.id, i])),
 		capByType: new Map(capabilities.indicators.map((c) => [c.type, c])),
 		offeredOperators: new Set(capabilities.operators.map((o) => o.id)),
-		timeframeIds: new Set(capabilities.timeframes.map((t) => t.id))
+		timeframeIds: new Set(capabilities.timeframes.map((t) => t.id)),
+		timeframeSeconds: new Map(capabilities.timeframes.map((t) => [t.id, t.seconds])),
+		universeTimeframe: spec.universe.timeframe,
+		shortEntry: spec.rules.shortEntry
 	};
 
 	if (!spec.name.trim()) add(ctx, 'warning', 'name', 'Give your strategy a name.');
@@ -86,8 +95,28 @@ export function issuesByNode(issues: SpecIssue[]): Map<string, SpecIssue[]> {
 
 function validateUniverse(spec: StrategySpec, ctx: Ctx) {
 	const u = spec.universe;
-	if (u.tickers.length === 0 || u.tickers.every((t) => !t.trim())) {
+	const isIndexSource = u.source?.kind === 'index';
+	// An index source resolves its own tickers point-in-time at run time, so an
+	// empty explicit list is fine there (it is only a fallback/seed). For the
+	// default explicit source, at least one ticker is required.
+	if (!isIndexSource && (u.tickers.length === 0 || u.tickers.every((t) => !t.trim()))) {
 		add(ctx, 'error', 'universe.tickers', 'Add at least one ticker.');
+	}
+	if (u.source?.kind === 'index') {
+		if (u.source.provider !== 'fmpPit') {
+			add(ctx, 'error', 'universe.source.provider', 'Index source provider must be "fmpPit".');
+		}
+		if (!u.source.index.trim()) {
+			add(ctx, 'error', 'universe.source.index', 'Choose an index (e.g. "sp500").');
+		}
+		if (u.source.maxSymbols !== undefined && !isPositiveInt(u.source.maxSymbols)) {
+			add(
+				ctx,
+				'error',
+				'universe.source.maxSymbols',
+				'Max symbols must be a positive whole number.'
+			);
+		}
 	}
 	if (!ctx.timeframeIds.has(u.timeframe)) {
 		add(ctx, 'error', 'universe.timeframe', `Unknown timeframe "${u.timeframe}".`);
@@ -152,7 +181,33 @@ function validateIndicators(spec: StrategySpec, ctx: Ctx) {
 				`"${ind.priceSource}" is not a typical source for ${cap.label}.`
 			);
 		}
+		// Multi-timeframe reference (spec §3): an indicator may be computed on a
+		// HIGHER timeframe than the universe and aligned back to base bars without
+		// look-ahead. The TF must be known and not LOWER than the universe TF (a
+		// lower TF would fabricate sub-bar data). Equal is allowed (= base bars).
+		validateIndicatorTimeframe(ind, base, ctx);
 	});
+}
+
+function validateIndicatorTimeframe(ind: IndicatorInstance, base: string, ctx: Ctx) {
+	if (ind.timeframe === undefined) return;
+	const path = `${base}.timeframe`;
+	const tfSeconds = ctx.timeframeSeconds.get(ind.timeframe);
+	if (tfSeconds === undefined) {
+		add(ctx, 'error', path, `Unknown timeframe "${ind.timeframe}".`);
+		return;
+	}
+	const baseSeconds = ctx.timeframeSeconds.get(ctx.universeTimeframe);
+	if (baseSeconds === undefined) return; // unknown universe TF already flagged upstream
+	if (tfSeconds < baseSeconds) {
+		add(
+			ctx,
+			'error',
+			path,
+			`Indicator timeframe "${ind.timeframe}" is lower than the universe timeframe ` +
+				`"${ctx.universeTimeframe}". Use a timeframe equal to or higher than the chart.`
+		);
+	}
 }
 
 function validateRules(spec: StrategySpec, ctx: Ctx) {
@@ -207,7 +262,9 @@ function validateGroup(group: ConditionGroup, path: string, section: RuleSection
 }
 
 function validateLeaf(leaf: ConditionLeaf, path: string, ctx: Ctx) {
-	if (!ctx.offeredOperators.has(leaf.op)) {
+	// `sequence` composes child leaves and has no operator of its own; the rest
+	// carry an `op` that must be offered by the backend.
+	if (leaf.kind !== 'sequence' && !ctx.offeredOperators.has(leaf.op)) {
 		add(ctx, 'warning', path, `Operator "${leaf.op}" is not offered by the backend.`, leaf.id);
 	}
 	switch (leaf.kind) {
@@ -246,10 +303,47 @@ function validateLeaf(leaf: ConditionLeaf, path: string, ctx: Ctx) {
 				}
 			}
 			break;
+		case 'persistence':
+			validateOperand(leaf.operand, `${path}.operand`, leaf.id, ctx);
+			validateOperand(leaf.threshold, `${path}.threshold`, leaf.id, ctx);
+			if (!isPositiveInt(leaf.bars)) {
+				add(ctx, 'error', `${path}.bars`, 'Persistence must span at least 1 bar.', leaf.id);
+			}
+			break;
+		case 'sequence':
+			if (!isPositiveInt(leaf.withinBars)) {
+				add(ctx, 'error', `${path}.withinBars`, 'Within-bars must be at least 1 bar.', leaf.id);
+			}
+			validateLeaf(leaf.first, `${path}.first`, ctx);
+			validateLeaf(leaf.second, `${path}.second`, ctx);
+			break;
 	}
 }
 
+function isPositiveInt(n: number): boolean {
+	return Number.isInteger(n) && n >= 1;
+}
+
 function validateOperand(operand: Operand, path: string, nodeId: string, ctx: Ctx) {
+	if (operand.kind === 'aggregate') {
+		if (!isPositiveInt(operand.window)) {
+			add(ctx, 'error', `${path}.window`, 'Aggregate window must be at least 1 bar.', nodeId);
+		}
+		if (!Number.isInteger(operand.offset) || operand.offset < 0) {
+			add(ctx, 'error', `${path}.offset`, 'Offset must be a whole number ≥ 0.', nodeId);
+		}
+		if (operand.source.kind === 'constant') {
+			add(
+				ctx,
+				'warning',
+				`${path}.source`,
+				'Aggregating a constant yields that constant — pick a series.',
+				nodeId
+			);
+		}
+		validateOperand(operand.source, `${path}.source`, nodeId, ctx);
+		return;
+	}
 	if (operand.kind === 'indicator') {
 		if (!operand.ref) {
 			add(ctx, 'error', path, 'Choose an indicator.', nodeId);
@@ -328,6 +422,180 @@ function validateRisk(risk: Risk, ctx: Ctx) {
 		'risk.trailingStop',
 		ctx
 	);
+	validateScaleOut(risk, ctx);
+	validateCorrelationLimit(risk, ctx);
+	validateMargin(risk, ctx);
+	validateLifecycleControls(risk, ctx);
+}
+
+/**
+ * §4c/§5 lifecycle controls coherence:
+ * - `reentryCooldownBars` (when set) must be a positive integer.
+ * - `maxPositionsPerSector` (when set) must be a positive integer, and it needs
+ *   LIVE sector data fetched at run time (the engine cannot infer sectors) → warn.
+ * - `hardToBorrowAPR` must be ≥ 0; charging it without any symbols in the
+ *   hard-to-borrow list has no effect → warned.
+ */
+function validateLifecycleControls(risk: Risk, ctx: Ctx) {
+	if (risk.reentryCooldownBars !== undefined && !isPositiveInt(risk.reentryCooldownBars)) {
+		add(
+			ctx,
+			'error',
+			'risk.reentryCooldownBars',
+			'Re-entry cooldown must be a positive whole number of bars.'
+		);
+	}
+	if (risk.maxPositionsPerSector !== undefined) {
+		if (!isPositiveInt(risk.maxPositionsPerSector)) {
+			add(
+				ctx,
+				'error',
+				'risk.maxPositionsPerSector',
+				'Max positions per sector must be a positive whole number.'
+			);
+		} else {
+			add(
+				ctx,
+				'warning',
+				'risk.maxPositionsPerSector',
+				'The sector cap needs live sector data fetched at run time; if it is unavailable the cap is skipped and a warning is surfaced on the run.'
+			);
+		}
+	}
+	const htbList = risk.hardToBorrowSymbols ?? [];
+	const hasHtbSymbols = htbList.some((s) => s.trim().length > 0);
+	if (risk.hardToBorrowAPR !== undefined) {
+		if (!(risk.hardToBorrowAPR >= 0)) {
+			add(ctx, 'error', 'risk.hardToBorrowAPR', 'Hard-to-borrow APR cannot be negative.');
+		} else if (risk.hardToBorrowAPR > 0 && !hasHtbSymbols) {
+			add(
+				ctx,
+				'warning',
+				'risk.hardToBorrowAPR',
+				'Hard-to-borrow surcharge has no effect without any symbols in the hard-to-borrow list.'
+			);
+		} else if (risk.hardToBorrowAPR > 0 && countLeaves(ctx.shortEntry) === 0) {
+			add(
+				ctx,
+				'warning',
+				'risk.hardToBorrowAPR',
+				'Hard-to-borrow surcharge only applies to short positions, but this strategy has no short entry rule.'
+			);
+		}
+	}
+}
+
+/**
+ * §5 Correlation-exposure limit coherence: `maxCorrelation` (when set) must be in
+ * (0, 1]; `correlationLookback` (only meaningful with `maxCorrelation`) must be a
+ * positive integer, and a too-small window makes the estimate noisy → warned.
+ */
+function validateCorrelationLimit(risk: Risk, ctx: Ctx) {
+	const MIN_LOOKBACK = 20;
+	if (risk.maxCorrelation !== undefined && !(risk.maxCorrelation > 0 && risk.maxCorrelation <= 1)) {
+		add(
+			ctx,
+			'error',
+			'risk.maxCorrelation',
+			'Max correlation must be between 0 (exclusive) and 1 (inclusive).'
+		);
+	}
+	if (risk.correlationLookback !== undefined) {
+		if (!isPositiveInt(risk.correlationLookback)) {
+			add(
+				ctx,
+				'error',
+				'risk.correlationLookback',
+				'Correlation lookback must be a positive whole number of bars.'
+			);
+		} else if (risk.maxCorrelation !== undefined && risk.correlationLookback < MIN_LOOKBACK) {
+			add(
+				ctx,
+				'warning',
+				'risk.correlationLookback',
+				`A correlation lookback below ${MIN_LOOKBACK} bars gives a noisy estimate; consider a longer window.`
+			);
+		}
+	}
+}
+
+/**
+ * §5 Margin / leverage coherence: `maxLeverage` (when set) must be ≥ 1 (a value of
+ * 1 = cash-only). `marginInterestAPR` must be ≥ 0, and charging margin interest
+ * without any leverage (maxLeverage 1 / unset → no borrowed cash) has no effect →
+ * warned.
+ */
+function validateMargin(risk: Risk, ctx: Ctx) {
+	if (risk.maxLeverage !== undefined && !(risk.maxLeverage >= 1)) {
+		add(ctx, 'error', 'risk.maxLeverage', 'Max leverage must be at least 1 (1 = cash-only).');
+	}
+	if (risk.marginInterestAPR !== undefined) {
+		if (!(risk.marginInterestAPR >= 0)) {
+			add(ctx, 'error', 'risk.marginInterestAPR', 'Margin interest APR cannot be negative.');
+		} else if (risk.marginInterestAPR > 0 && (risk.maxLeverage ?? 1) <= 1) {
+			add(
+				ctx,
+				'warning',
+				'risk.marginInterestAPR',
+				'Margin interest has no effect without leverage (set max leverage above 1 to borrow cash).'
+			);
+		}
+	}
+}
+
+/**
+ * Scale-out / partial-profit coherence (§4c): each fraction in (0, 1); the sum
+ * of all fractions ≤ 1 (a sum of exactly 1 leaves no runner — allowed, warned);
+ * each trigger's r/percent positive; an rMultiple trigger needs a non-'none'
+ * stopLoss to define R.
+ */
+function validateScaleOut(risk: Risk, ctx: Ctx) {
+	const scaleOut = risk.scaleOut;
+	if (!scaleOut) return;
+	if (scaleOut.levels.length === 0) return;
+	let sum = 0;
+	scaleOut.levels.forEach((level, i) => {
+		const base = `risk.scaleOut.levels[${i}]`;
+		if (!(level.fraction > 0 && level.fraction < 1)) {
+			add(
+				ctx,
+				'error',
+				`${base}.fraction`,
+				'Scale-out fraction must be between 0 and 1 (exclusive).'
+			);
+		}
+		sum += level.fraction;
+		if (level.trigger.kind === 'rMultiple') {
+			if (!(level.trigger.r > 0)) {
+				add(ctx, 'error', `${base}.trigger.r`, 'Scale-out R multiple must be greater than 0.');
+			}
+			if (risk.stopLoss.mode === 'none') {
+				add(
+					ctx,
+					'error',
+					`${base}.trigger`,
+					'An R-multiple scale-out level needs a stop loss to define R. Add a stop or use a percent trigger.'
+				);
+			}
+		} else if (!(level.trigger.percent > 0)) {
+			add(ctx, 'error', `${base}.trigger.percent`, 'Scale-out percent must be greater than 0.');
+		}
+	});
+	if (sum > 1 + 1e-9) {
+		add(
+			ctx,
+			'error',
+			'risk.scaleOut',
+			`Scale-out fractions sum to ${sum.toFixed(2)} (> 1). They cannot exceed the whole position.`
+		);
+	} else if (Math.abs(sum - 1) <= 1e-9) {
+		add(
+			ctx,
+			'warning',
+			'risk.scaleOut',
+			'Scale-out fractions sum to 1 — the position is fully closed by the levels, leaving no runner.'
+		);
+	}
 }
 
 function validateAtrRef(ref: string | undefined, path: string, ctx: Ctx) {
@@ -357,4 +625,28 @@ function validateExecution(spec: StrategySpec, capabilities: Capabilities, ctx: 
 			`Order type "${spec.execution.orderType}" is not supported.`
 		);
 	}
+	// §5 Limit/stop offset: a percentage ≥ 0. 0/undefined keeps the reference at the
+	// signal close (plain limit/stop back-compat). It is only consulted by the
+	// price-conditioned order types; with `market`/`moc` it has no effect → warned.
+	const off = spec.execution.limitOffsetPercent;
+	if (off !== undefined) {
+		if (!(off >= 0)) {
+			add(ctx, 'error', 'execution.limitOffsetPercent', 'Limit offset cannot be negative.');
+		} else if (
+			off > 0 &&
+			(spec.execution.orderType === 'market' || spec.execution.orderType === 'moc')
+		) {
+			add(
+				ctx,
+				'warning',
+				'execution.limitOffsetPercent',
+				`A limit offset has no effect on "${spec.execution.orderType}" orders.`
+			);
+		}
+	}
+	// §5 stopLimit/loc semantics note: stopLimit requires the next bar to trigger AND
+	// the fill to stay within the cap band (a SECOND `limitOffsetPercent` beyond the
+	// trigger) — a gap past the cap expires unfilled. loc only fills at the next
+	// bar's close when that close satisfies the limit (else it expires). Both are
+	// good-for-next-bar only and never rest across multiple bars.
 }

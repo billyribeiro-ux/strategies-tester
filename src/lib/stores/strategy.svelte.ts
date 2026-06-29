@@ -27,13 +27,15 @@ import type {
 	RuleNode,
 	RuleSection,
 	SavedStrategy,
+	ScaleOut,
 	SessionSpec,
 	SlippageModel,
 	StopLoss,
 	StrategySpec,
 	TakeProfit,
 	TimeframeId,
-	TrailingStop
+	TrailingStop,
+	UniverseSource
 } from '$lib/types';
 import {
 	createDefaultSpec,
@@ -129,6 +131,18 @@ export class StrategyStore {
 		this.markDirty();
 	};
 
+	/**
+	 * How the run resolves its tradeable tickers. `{ kind: 'tickers' }` (or
+	 * undefined) is the default explicit behaviour; `{ kind: 'index', ... }`
+	 * resolves point-in-time index members at run time. Setting `'tickers'`
+	 * clears the source entirely so backward-compatible specs stay clean.
+	 */
+	setUniverseSource = (source: UniverseSource | undefined) => {
+		this.spec.universe.source =
+			source === undefined || source.kind === 'tickers' ? undefined : source;
+		this.markDirty();
+	};
+
 	// --- indicators ---------------------------------------------------------
 
 	private capByType(type: string): IndicatorCapability | undefined {
@@ -152,6 +166,13 @@ export class StrategyStore {
 		// Null out risk ATR refs that pointed at the removed indicator so the spec
 		// stays a valid union; dangling operand refs are surfaced by validation.
 		const r = this.spec.risk;
+		if (r.positionSizing.mode === 'volatilityTarget' && r.positionSizing.atrRef === id) {
+			this.spec.risk.positionSizing = {
+				mode: 'volatilityTarget',
+				atrRef: '',
+				targetVolPercent: r.positionSizing.targetVolPercent
+			};
+		}
 		if (r.stopLoss.mode === 'atr' && r.stopLoss.atrRef === id) {
 			this.spec.risk.stopLoss = { mode: 'atr', atrRef: '', multiple: r.stopLoss.multiple };
 		}
@@ -182,6 +203,18 @@ export class StrategyStore {
 		const ind = this.spec.indicators.find((i) => i.id === id);
 		if (!ind) return;
 		ind.label = label;
+		this.markDirty();
+	};
+
+	/**
+	 * Multi-timeframe reference (spec §3). Setting a HIGHER timeframe than the
+	 * universe computes the indicator on resampled higher-TF bars, aligned to base
+	 * bars without look-ahead. An empty value clears it (= compute on base bars).
+	 */
+	setIndicatorTimeframe = (id: string, timeframe: TimeframeId | undefined) => {
+		const ind = this.spec.indicators.find((i) => i.id === id);
+		if (!ind) return;
+		ind.timeframe = timeframe && timeframe.trim() ? timeframe : undefined;
 		this.markDirty();
 	};
 
@@ -311,6 +344,112 @@ export class StrategyStore {
 		this.markDirty();
 	};
 
+	/** Time exit: force-close after N bars. Non-positive/NaN clears it (undefined). */
+	setMaxBarsInTrade = (bars: number | undefined) => {
+		this.spec.risk.maxBarsInTrade =
+			typeof bars === 'number' && Number.isFinite(bars) && bars > 0 ? Math.floor(bars) : undefined;
+		this.markDirty();
+	};
+
+	/** Drawdown circuit-breaker percent. Out-of-range/NaN clears it (undefined). */
+	setMaxDrawdownStopPercent = (pct: number | undefined) => {
+		this.spec.risk.maxDrawdownStopPercent =
+			typeof pct === 'number' && Number.isFinite(pct) && pct > 0 && pct <= 100 ? pct : undefined;
+		this.markDirty();
+	};
+
+	/** Max portfolio heat percent. Out-of-range/NaN clears it (undefined). */
+	setMaxPortfolioHeatPercent = (pct: number | undefined) => {
+		this.spec.risk.maxPortfolioHeatPercent =
+			typeof pct === 'number' && Number.isFinite(pct) && pct > 0 && pct <= 100 ? pct : undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §5 Correlation-exposure limit (max |corr| with any open position). Out-of-range
+	 * (must be in (0, 1]) or NaN clears it (undefined = off).
+	 */
+	setMaxCorrelation = (value: number | undefined) => {
+		this.spec.risk.maxCorrelation =
+			typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 1
+				? value
+				: undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §5 Correlation lookback (bars). Non-positive/NaN clears it (undefined → engine
+	 * default of 60 bars).
+	 */
+	setCorrelationLookback = (bars: number | undefined) => {
+		this.spec.risk.correlationLookback =
+			typeof bars === 'number' && Number.isFinite(bars) && bars > 0 ? Math.floor(bars) : undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §5 Max leverage (gross exposure as a multiple of equity). A value ≤ 1 or NaN
+	 * clears it (undefined = 1 = cash-only, today's behaviour).
+	 */
+	setMaxLeverage = (value: number | undefined) => {
+		this.spec.risk.maxLeverage =
+			typeof value === 'number' && Number.isFinite(value) && value > 1 ? value : undefined;
+		this.markDirty();
+	};
+
+	/** §5 Margin interest (annual %). Non-positive/NaN clears it (undefined = none). */
+	setMarginInterestAPR = (apr: number | undefined) => {
+		this.spec.risk.marginInterestAPR =
+			typeof apr === 'number' && Number.isFinite(apr) && apr > 0 ? apr : undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §4c Re-entry cooldown (bars to block a new entry on a ticker after it closes).
+	 * Non-positive/NaN clears it (undefined = off).
+	 */
+	setReentryCooldownBars = (bars: number | undefined) => {
+		this.spec.risk.reentryCooldownBars =
+			typeof bars === 'number' && Number.isFinite(bars) && bars > 0 ? Math.floor(bars) : undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §4c Sector exposure cap (max concurrent open positions per sector). Needs live
+	 * sector data at run time. Non-positive/NaN clears it (undefined = off).
+	 */
+	setMaxPositionsPerSector = (value: number | undefined) => {
+		this.spec.risk.maxPositionsPerSector =
+			typeof value === 'number' && Number.isFinite(value) && value > 0
+				? Math.floor(value)
+				: undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §5 Hard-to-borrow symbols (shorts on these accrue an extra borrow surcharge).
+	 * Trimmed/upper-cased and de-duplicated; an empty list clears it (undefined).
+	 */
+	setHardToBorrowSymbols = (symbols: string[]) => {
+		const cleaned: string[] = [];
+		for (const s of symbols) {
+			const sym = s.trim().toUpperCase();
+			if (sym && !cleaned.includes(sym)) cleaned.push(sym);
+		}
+		this.spec.risk.hardToBorrowSymbols = cleaned.length > 0 ? cleaned : undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §5 Hard-to-borrow surcharge (annual %, on top of short borrow APR for listed
+	 * shorts). Non-positive/NaN clears it (undefined = none).
+	 */
+	setHardToBorrowAPR = (apr: number | undefined) => {
+		this.spec.risk.hardToBorrowAPR =
+			typeof apr === 'number' && Number.isFinite(apr) && apr > 0 ? apr : undefined;
+		this.markDirty();
+	};
+
 	setStopLoss = (stop: StopLoss) => {
 		this.spec.risk.stopLoss = stop;
 		this.markDirty();
@@ -326,6 +465,16 @@ export class StrategyStore {
 		this.markDirty();
 	};
 
+	/**
+	 * Scale-out / partial-profit levels (§4c). An empty/undefined config clears it
+	 * (no scale-out — today's behaviour); a config with zero levels is normalised
+	 * to undefined so backward-compatible specs stay clean.
+	 */
+	setScaleOut = (scaleOut: ScaleOut | undefined) => {
+		this.spec.risk.scaleOut = scaleOut && scaleOut.levels.length > 0 ? scaleOut : undefined;
+		this.markDirty();
+	};
+
 	setCommission = (c: CommissionModel) => {
 		this.spec.risk.commission = c;
 		this.markDirty();
@@ -333,6 +482,13 @@ export class StrategyStore {
 
 	setSlippage = (s: SlippageModel) => {
 		this.spec.risk.slippage = s;
+		this.markDirty();
+	};
+
+	/** Short borrow cost (annual %, §costs). Non-positive/NaN clears it (undefined). */
+	setShortBorrowAPR = (apr: number | undefined) => {
+		this.spec.risk.shortBorrowAPR =
+			typeof apr === 'number' && Number.isFinite(apr) && apr > 0 ? apr : undefined;
 		this.markDirty();
 	};
 
@@ -350,6 +506,26 @@ export class StrategyStore {
 
 	setExecution = (execution: Execution) => {
 		this.spec.execution = execution;
+		this.markDirty();
+	};
+
+	/**
+	 * Set the limit/stop offset (percent, §5). A non-positive or NaN value clears it
+	 * (undefined = reference is the signal close, plain limit/stop back-compat).
+	 */
+	setLimitOffsetPercent = (pct: number | undefined) => {
+		this.spec.execution.limitOffsetPercent =
+			typeof pct === 'number' && Number.isFinite(pct) && pct > 0 ? pct : undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * Set the liquidity cap (max % of bar volume, §2.3). A non-positive or NaN
+	 * value clears the cap (undefined = uncapped).
+	 */
+	setExecutionLiquidityCap = (pct: number | undefined) => {
+		this.spec.execution.maxBarVolumePct =
+			typeof pct === 'number' && Number.isFinite(pct) && pct > 0 ? pct : undefined;
 		this.markDirty();
 	};
 
