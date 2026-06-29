@@ -43,6 +43,8 @@ interface Ctx {
 	timeframeSeconds: Map<string, number>;
 	/** The universe timeframe id, against which MTF references are ordered. */
 	universeTimeframe: string;
+	/** The short-entry rule group, so risk checks can tell if the strategy shorts. */
+	shortEntry: ConditionGroup;
 }
 
 function add(ctx: Ctx, severity: Severity, path: string, message: string, nodeId?: string) {
@@ -59,7 +61,8 @@ export function validateSpec(spec: StrategySpec, capabilities: Capabilities): Sp
 		offeredOperators: new Set(capabilities.operators.map((o) => o.id)),
 		timeframeIds: new Set(capabilities.timeframes.map((t) => t.id)),
 		timeframeSeconds: new Map(capabilities.timeframes.map((t) => [t.id, t.seconds])),
-		universeTimeframe: spec.universe.timeframe
+		universeTimeframe: spec.universe.timeframe,
+		shortEntry: spec.rules.shortEntry
 	};
 
 	if (!spec.name.trim()) add(ctx, 'warning', 'name', 'Give your strategy a name.');
@@ -422,6 +425,64 @@ function validateRisk(risk: Risk, ctx: Ctx) {
 	validateScaleOut(risk, ctx);
 	validateCorrelationLimit(risk, ctx);
 	validateMargin(risk, ctx);
+	validateLifecycleControls(risk, ctx);
+}
+
+/**
+ * §4c/§5 lifecycle controls coherence:
+ * - `reentryCooldownBars` (when set) must be a positive integer.
+ * - `maxPositionsPerSector` (when set) must be a positive integer, and it needs
+ *   LIVE sector data fetched at run time (the engine cannot infer sectors) → warn.
+ * - `hardToBorrowAPR` must be ≥ 0; charging it without any symbols in the
+ *   hard-to-borrow list has no effect → warned.
+ */
+function validateLifecycleControls(risk: Risk, ctx: Ctx) {
+	if (risk.reentryCooldownBars !== undefined && !isPositiveInt(risk.reentryCooldownBars)) {
+		add(
+			ctx,
+			'error',
+			'risk.reentryCooldownBars',
+			'Re-entry cooldown must be a positive whole number of bars.'
+		);
+	}
+	if (risk.maxPositionsPerSector !== undefined) {
+		if (!isPositiveInt(risk.maxPositionsPerSector)) {
+			add(
+				ctx,
+				'error',
+				'risk.maxPositionsPerSector',
+				'Max positions per sector must be a positive whole number.'
+			);
+		} else {
+			add(
+				ctx,
+				'warning',
+				'risk.maxPositionsPerSector',
+				'The sector cap needs live sector data fetched at run time; if it is unavailable the cap is skipped and a warning is surfaced on the run.'
+			);
+		}
+	}
+	const htbList = risk.hardToBorrowSymbols ?? [];
+	const hasHtbSymbols = htbList.some((s) => s.trim().length > 0);
+	if (risk.hardToBorrowAPR !== undefined) {
+		if (!(risk.hardToBorrowAPR >= 0)) {
+			add(ctx, 'error', 'risk.hardToBorrowAPR', 'Hard-to-borrow APR cannot be negative.');
+		} else if (risk.hardToBorrowAPR > 0 && !hasHtbSymbols) {
+			add(
+				ctx,
+				'warning',
+				'risk.hardToBorrowAPR',
+				'Hard-to-borrow surcharge has no effect without any symbols in the hard-to-borrow list.'
+			);
+		} else if (risk.hardToBorrowAPR > 0 && countLeaves(ctx.shortEntry) === 0) {
+			add(
+				ctx,
+				'warning',
+				'risk.hardToBorrowAPR',
+				'Hard-to-borrow surcharge only applies to short positions, but this strategy has no short entry rule.'
+			);
+		}
+	}
 }
 
 /**

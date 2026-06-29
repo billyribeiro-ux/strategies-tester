@@ -224,7 +224,11 @@ const riskSchema = z.object({
 	maxCorrelation: z.number().gt(0).max(1).optional(),
 	correlationLookback: z.number().int().positive().optional(),
 	maxLeverage: z.number().min(1).optional(),
-	marginInterestAPR: z.number().min(0).optional()
+	marginInterestAPR: z.number().min(0).optional(),
+	reentryCooldownBars: z.number().int().positive().optional(),
+	maxPositionsPerSector: z.number().int().positive().optional(),
+	hardToBorrowSymbols: z.array(z.string()).optional(),
+	hardToBorrowAPR: z.number().min(0).optional()
 });
 
 const executionSchema = z.object({

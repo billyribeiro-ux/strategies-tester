@@ -33,6 +33,7 @@ import { ParamReader } from '../indicators/compute';
 import { alignToBase, resampleBySeconds } from './mtf';
 import { pearson, closeReturns } from './correlation';
 import { evaluateGroup, type EvalContext, type IndicatorSeriesMap } from './evaluate';
+import { sectorExposure, type SectorMap } from '../universe/sectors';
 import {
 	computeDistribution,
 	computeDrawdown,
@@ -422,9 +423,13 @@ function sizingAtrAtBar(spec: StrategySpec, td: TickerData, barIndex: number): n
 
 export function runBacktest(
 	spec: StrategySpec,
-	candlesByTicker: Record<string, Candle[]>
+	candlesByTicker: Record<string, Candle[]>,
+	opts: { sectors?: SectorMap } = {}
 ): BacktestResult {
 	const warnings: string[] = [];
+	// §4c Sector exposure cap: an optional, externally-supplied symbol→sector map.
+	// Existing 2-arg callers pass nothing → `sectors` is undefined and the cap is off.
+	const sectorMap = opts.sectors;
 	const initialCapital = spec.risk.initialCapital;
 	const timeframeSeconds =
 		CAPABILITIES.timeframes.find((t) => t.id === spec.universe.timeframe)?.seconds ?? 86_400;
@@ -543,6 +548,39 @@ export function runBacktest(
 	const marginApr = typeof rawMarginApr === 'number' && rawMarginApr > 0 ? rawMarginApr : null;
 	const marginPerBarRate =
 		marginApr !== null ? (marginApr / 100) * (timeframeSeconds / SECONDS_PER_YEAR) : 0;
+
+	// §5 Hard-to-borrow: SHORTs on a listed ticker accrue an ADDITIONAL borrow charge
+	// at this APR on top of `shortBorrowAPR`, same per-bar-held accrual at close.
+	// undefined/<=0 disables it. Symbols matched case-insensitively (upper-cased set).
+	const htbSymbols = new Set(
+		(spec.risk.hardToBorrowSymbols ?? [])
+			.map((s) => s.trim().toUpperCase())
+			.filter((s) => s.length > 0)
+	);
+	const rawHtbApr = spec.risk.hardToBorrowAPR;
+	const htbApr = typeof rawHtbApr === 'number' && rawHtbApr > 0 ? rawHtbApr : null;
+	const htbPerBarRate =
+		htbApr !== null ? (htbApr / 100) * (timeframeSeconds / SECONDS_PER_YEAR) : 0;
+
+	// §4c Re-entry cooldown: after a position on a ticker CLOSES at bar index X, block
+	// any NEW entry on that SAME ticker until the bar index > X + cooldown. undefined/<=0
+	// disables it. Tracks the last exit bar index per ticker (always a PAST bar →
+	// leak-free). Pyramided adds are exempt (handled by addToPosition, never reach here).
+	const rawCooldown = spec.risk.reentryCooldownBars;
+	const reentryCooldownBars =
+		typeof rawCooldown === 'number' && rawCooldown > 0 ? Math.floor(rawCooldown) : null;
+	const lastExitBarByTicker = new Map<string, number>();
+	let reentryCooldownBlocks = 0;
+
+	// §4c Sector exposure cap: max CONCURRENTLY-OPEN positions per sector. undefined/<=0
+	// disables it. Requires a sector map (opts.sectors); when the cap is set but no map
+	// (or no sector for the candidate) is available, the entry is allowed and we warn
+	// ONCE so the cap is never silently mis-enforced.
+	const rawSectorCap = spec.risk.maxPositionsPerSector;
+	const sectorCap =
+		typeof rawSectorCap === 'number' && rawSectorCap > 0 ? Math.floor(rawSectorCap) : null;
+	let sectorCapBlocks = 0;
+	let sectorDataWarned = false;
 
 	// §2.3 Liquidity cap: limit a single fill to a share of the fill bar's volume.
 	// undefined/<=0 disables the cap. We warn ONCE per run if it ever bites.
@@ -778,6 +816,21 @@ export function runBacktest(
 		warnings.push(
 			`Margin / leverage cap blocked ${leverageBlocks} ` +
 				`${leverageBlocks === 1 ? 'entry' : 'entries'} (gross exposure above ${maxLeverage}× equity).`
+		);
+	}
+
+	if (reentryCooldownBlocks > 0) {
+		warnings.push(
+			`Re-entry cooldown blocked ${reentryCooldownBlocks} ` +
+				`${reentryCooldownBlocks === 1 ? 'entry' : 'entries'} ` +
+				`(within ${reentryCooldownBars} bars of a prior exit on the same ticker).`
+		);
+	}
+
+	if (sectorCapBlocks > 0) {
+		warnings.push(
+			`Sector exposure cap blocked ${sectorCapBlocks} ` +
+				`${sectorCapBlocks === 1 ? 'entry' : 'entries'} (more than ${sectorCap} open per sector).`
 		);
 	}
 
@@ -1187,19 +1240,75 @@ export function runBacktest(
 		return false;
 	}
 
+	/**
+	 * §4c Re-entry cooldown. Returns true if a NEW entry on `td` at decision bar `idx`
+	 * must be blocked because a position on the SAME ticker closed too recently: the
+	 * last exit bar index X blocks entries while idx <= X + cooldown (re-entry is
+	 * allowed only once idx > X + cooldown). Leak-free: X is always a past exit index.
+	 * Counts a block when it bites.
+	 */
+	function reentryBlocked(td: TickerData, idx: number): boolean {
+		if (reentryCooldownBars === null) return false;
+		const lastExit = lastExitBarByTicker.get(td.ticker);
+		if (lastExit === undefined) return false;
+		if (idx <= lastExit + reentryCooldownBars) {
+			reentryCooldownBlocks++;
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * §4c Sector exposure cap. Returns true if opening a NEW position on `td` would
+	 * exceed the per-sector cap of CONCURRENTLY-OPEN positions. The candidate's sector
+	 * is resolved from the injected sector map; the count of currently-open positions
+	 * in that sector is taken via `sectorExposure(openSymbols, sectors)`. Adding the
+	 * candidate (count + 1) may not exceed the cap. When the cap is set but no sector
+	 * map / no sector for the candidate is available, the entry is ALLOWED and a
+	 * one-time warning is recorded (the cap cannot be enforced without live data).
+	 * Counts a block when it bites. Independent of bar index → leak-free.
+	 */
+	function sectorCapBlocked(td: TickerData): boolean {
+		if (sectorCap === null) return false;
+		const sector = sectorMap?.[td.ticker.trim().toUpperCase()];
+		if (!sectorMap || !sector) {
+			if (!sectorDataWarned) {
+				sectorDataWarned = true;
+				warnings.push(
+					`Sector exposure cap is set (max ${sectorCap} per sector) but no sector data ` +
+						`was available for ${td.ticker}; the cap was not enforced for it.`
+				);
+			}
+			return false;
+		}
+		const openSymbols = openPositions.map((p) => p.ticker);
+		const counts = sectorExposure(openSymbols, sectorMap);
+		const current = counts[sector] ?? 0;
+		if (current + 1 > sectorCap) {
+			sectorCapBlocks++;
+			return true;
+		}
+		return false;
+	}
+
 	function tryEntries(td: TickerData, idx: number, side: TradeSide) {
 		const entryGroup = side === 'long' ? spec.rules.longEntry : spec.rules.shortEntry;
 		if (!evaluateGroup(entryGroup, td.ctx, idx)) return;
 
 		const existing = openPositions.find((p) => p.ticker === td.ticker && p.side === side);
 		if (existing) {
-			// Pyramiding: allow up to `pyramiding` additional adds.
+			// Pyramiding: allow up to `pyramiding` additional adds. Pyramided adds are
+			// NOT new entries, so the re-entry cooldown and sector cap do not apply.
 			if (existing.adds >= pyramiding) return;
 			addToPosition(existing, td, idx, side);
 			return;
 		}
 
 		if (openPositions.length >= maxPositions) return;
+		// §4c Re-entry cooldown: block a NEW entry on a ticker that closed too recently.
+		if (reentryBlocked(td, idx)) return;
+		// §4c Sector exposure cap: block a NEW entry that would over-fill its sector.
+		if (sectorCapBlocked(td)) return;
 		openPosition(td, idx, side);
 	}
 
@@ -1354,9 +1463,16 @@ export function runBacktest(
 		// Longs accrue nothing. Summed at close so it is deterministic and fully
 		// reflected here; a partial close accrues only on its own qty.
 		const barsHeld = Math.max(0, exitBarIndex - pos.entryBarIndex);
+		// §5 Hard-to-borrow: a SHORT on a listed ticker accrues an ADDITIONAL borrow
+		// charge at `hardToBorrowAPR` on top of the regular `shortBorrowAPR`, same
+		// per-bar-held accrual on the entry notional. Non-HTB shorts and longs add 0.
+		const isShort = pos.side === 'short';
+		const isHtbShort =
+			isShort && htbApr !== null && htbSymbols.has(pos.ticker.trim().toUpperCase());
+		const effectiveBorrowPerBar = borrowPerBarRate + (isHtbShort ? htbPerBarRate : 0);
 		const borrowCost =
-			pos.side === 'short' && borrowPerBarRate > 0
-				? pos.entryPrice * qty * borrowPerBarRate * barsHeld
+			isShort && effectiveBorrowPerBar > 0
+				? pos.entryPrice * qty * effectiveBorrowPerBar * barsHeld
 				: 0;
 		if (borrowCost > 0) cash -= borrowCost;
 
@@ -1444,6 +1560,14 @@ export function runBacktest(
 		reason: ExitReason
 	) {
 		settleExit(pos, pos.qty, rawExitPrice, exitTime, exitBarIndex, reason);
+		// §4c Re-entry cooldown: record the FULL-close exit bar index for this ticker so
+		// later NEW entries on it can be gated. Partial scale-out closes go through
+		// settleExit directly (not here), so they never start a cooldown — the position
+		// is still open. Keep the LATEST exit index if multiple positions close.
+		const prev = lastExitBarByTicker.get(pos.ticker);
+		if (prev === undefined || exitBarIndex > prev) {
+			lastExitBarByTicker.set(pos.ticker, exitBarIndex);
+		}
 	}
 
 	/**

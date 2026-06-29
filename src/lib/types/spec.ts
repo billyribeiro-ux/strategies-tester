@@ -412,6 +412,52 @@ export interface Risk {
 	 * `maxLeverage = 1` the borrowed amount is 0 so there is no change. In [0, ∞).
 	 */
 	marginInterestAPR?: number;
+	/**
+	 * §4c Re-entry cooldown. After a position on a ticker CLOSES at bar index X, any
+	 * NEW entry on that SAME ticker is blocked until the bar index is strictly
+	 * greater than `X + reentryCooldownBars` (i.e. the cooldown spans the next
+	 * `reentryCooldownBars` bars). Pyramided adds to an already-open position are
+	 * exempt (they are not new entries). Leak-free: the gate reads only the last
+	 * exit bar index, which is always in the past. `undefined`/`0` = off. Positive
+	 * integer.
+	 */
+	reentryCooldownBars?: number;
+	/**
+	 * §4c Sector exposure cap. The maximum number of CONCURRENTLY-OPEN positions
+	 * allowed in any one sector. Before opening a NEW position on ticker X, the
+	 * candidate's sector is resolved from the run's injected sector map and the
+	 * count of currently-open positions in that sector is computed; if opening the
+	 * new position would exceed this cap, the entry is SKIPPED. Pyramided adds are
+	 * exempt (they do not add a new symbol to the sector). Requires a sector map to
+	 * be supplied to `runBacktest` (the API route fetches it); if the cap is set but
+	 * no map/sector is available, the entry is allowed and a one-time warning is
+	 * surfaced. `undefined`/`0` = off. Positive integer.
+	 */
+	maxPositionsPerSector?: number;
+	/**
+	 * §5 Hard-to-borrow symbols. Tickers that are especially costly/scarce to
+	 * borrow when shorted. A SHORT position whose ticker is in this list accrues an
+	 * ADDITIONAL borrow charge at `hardToBorrowAPR` ON TOP OF the regular
+	 * `shortBorrowAPR`, using the same per-bar-held accrual formula at close. Longs
+	 * and non-listed shorts are unaffected. Empty/omitted = no symbol is treated as
+	 * hard-to-borrow. Symbols are matched case-insensitively.
+	 */
+	hardToBorrowSymbols?: string[];
+	/**
+	 * §5 Hard-to-borrow surcharge: an annual rate, in percent, charged on the entry
+	 * notional of a SHORT position whose ticker is in `hardToBorrowSymbols`, for
+	 * every bar it is held — IN ADDITION to `shortBorrowAPR`. Per-bar cost =
+	 * shortNotional × (APR/100) × (timeframeSeconds / 31_557_600), summed over bars
+	 * held and deducted from cash and the trade's P&L at close (mirrors the regular
+	 * short-borrow accrual). `undefined`/`0` = no surcharge. In [0, ∞).
+	 *
+	 * Cross-margin / portfolio-margin netting is intentionally OUT OF SCOPE here:
+	 * netting borrow against offsetting long inventory or a prime-broker locate pool
+	 * needs a full margin-netting model across the whole portfolio, which is well
+	 * beyond this engine's per-position accounting (each position is settled on its
+	 * own notional and bars held). The HTB surcharge is a per-position approximation.
+	 */
+	hardToBorrowAPR?: number;
 }
 
 // ---------------------------------------------------------------------------

@@ -404,6 +404,52 @@ export class StrategyStore {
 		this.markDirty();
 	};
 
+	/**
+	 * §4c Re-entry cooldown (bars to block a new entry on a ticker after it closes).
+	 * Non-positive/NaN clears it (undefined = off).
+	 */
+	setReentryCooldownBars = (bars: number | undefined) => {
+		this.spec.risk.reentryCooldownBars =
+			typeof bars === 'number' && Number.isFinite(bars) && bars > 0 ? Math.floor(bars) : undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §4c Sector exposure cap (max concurrent open positions per sector). Needs live
+	 * sector data at run time. Non-positive/NaN clears it (undefined = off).
+	 */
+	setMaxPositionsPerSector = (value: number | undefined) => {
+		this.spec.risk.maxPositionsPerSector =
+			typeof value === 'number' && Number.isFinite(value) && value > 0
+				? Math.floor(value)
+				: undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §5 Hard-to-borrow symbols (shorts on these accrue an extra borrow surcharge).
+	 * Trimmed/upper-cased and de-duplicated; an empty list clears it (undefined).
+	 */
+	setHardToBorrowSymbols = (symbols: string[]) => {
+		const cleaned: string[] = [];
+		for (const s of symbols) {
+			const sym = s.trim().toUpperCase();
+			if (sym && !cleaned.includes(sym)) cleaned.push(sym);
+		}
+		this.spec.risk.hardToBorrowSymbols = cleaned.length > 0 ? cleaned : undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §5 Hard-to-borrow surcharge (annual %, on top of short borrow APR for listed
+	 * shorts). Non-positive/NaN clears it (undefined = none).
+	 */
+	setHardToBorrowAPR = (apr: number | undefined) => {
+		this.spec.risk.hardToBorrowAPR =
+			typeof apr === 'number' && Number.isFinite(apr) && apr > 0 ? apr : undefined;
+		this.markDirty();
+	};
+
 	setStopLoss = (stop: StopLoss) => {
 		this.spec.risk.stopLoss = stop;
 		this.markDirty();

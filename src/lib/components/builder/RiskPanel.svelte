@@ -12,7 +12,15 @@
 	import { assertNever } from '$lib/utils/assert-never';
 	import { indicatorLabel } from '$lib/spec/defaults';
 	import type { StrategyStore } from '$lib/stores/strategy.svelte';
-	import { Button, Callout, IconButton, NumberInput, Panel, Select } from '$lib/components/ui';
+	import {
+		Button,
+		Callout,
+		IconButton,
+		NumberInput,
+		Panel,
+		Select,
+		TextInput
+	} from '$lib/components/ui';
 	import { Plus, Shield, Trash } from 'phosphor-svelte';
 
 	interface Props {
@@ -255,6 +263,19 @@
 	const riskBasedNeedsStop = $derived(
 		risk.positionSizing.mode === 'riskBased' && risk.stopLoss.mode === 'none'
 	);
+
+	// --- hard-to-borrow (§5) ------------------------------------------------
+
+	/** Comma/space-separated text for the hard-to-borrow symbol list. */
+	const hardToBorrowText = $derived((risk.hardToBorrowSymbols ?? []).join(', '));
+
+	function setHardToBorrowText(text: string) {
+		store.setHardToBorrowSymbols(text.split(/[\s,]+/).filter(Boolean));
+	}
+
+	const hardToBorrowNeedsSymbols = $derived(
+		(risk.hardToBorrowAPR ?? 0) > 0 && (risk.hardToBorrowSymbols ?? []).length === 0
+	);
 </script>
 
 <Panel title="Risk & money management" description="Position sizing, stops, targets and costs.">
@@ -353,6 +374,26 @@
 					step={0.5}
 					bind:value={
 						() => risk.maxLeverage ?? 1, (v) => store.setMaxLeverage(v > 1 ? v : undefined)
+					}
+				/>
+				<NumberInput
+					label="Re-entry cooldown"
+					hint="Bars to block a new entry on a ticker after it closes, 0 = off"
+					min={0}
+					step={1}
+					bind:value={
+						() => risk.reentryCooldownBars ?? 0,
+						(v) => store.setReentryCooldownBars(v > 0 ? Math.round(v) : undefined)
+					}
+				/>
+				<NumberInput
+					label="Max positions per sector"
+					hint="Cap on concurrent open positions per sector (needs live sector data), 0 = off"
+					min={0}
+					step={1}
+					bind:value={
+						() => risk.maxPositionsPerSector ?? 0,
+						(v) => store.setMaxPositionsPerSector(v > 0 ? Math.round(v) : undefined)
 					}
 				/>
 			</div>
@@ -884,7 +925,31 @@
 						(v) => store.setMarginInterestAPR(v > 0 ? v : undefined)
 					}
 				/>
+				<NumberInput
+					label="Hard-to-borrow APR"
+					suffix="%"
+					hint="Extra borrow cost for listed shorts, on top of short borrow APR, 0 = none"
+					min={0}
+					step={0.5}
+					bind:value={
+						() => risk.hardToBorrowAPR ?? 0, (v) => store.setHardToBorrowAPR(v > 0 ? v : undefined)
+					}
+				/>
 			</div>
+			<div class="grid">
+				<TextInput
+					label="Hard-to-borrow symbols"
+					hint="Comma-separated tickers charged the extra short borrow cost"
+					placeholder="e.g. GME, AMC"
+					bind:value={() => hardToBorrowText, (v) => setHardToBorrowText(v)}
+				/>
+			</div>
+			{#if hardToBorrowNeedsSymbols}
+				<Callout tone="warning">
+					A hard-to-borrow APR is set but no symbols are listed — it will have no effect. Add
+					tickers above or clear the APR.
+				</Callout>
+			{/if}
 		</section>
 	</div>
 </Panel>

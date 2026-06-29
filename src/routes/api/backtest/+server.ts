@@ -18,6 +18,7 @@ import { runBacktest } from '$lib/server/engine/engine';
 import { computeBenchmark } from '$lib/server/engine/benchmark';
 import { FmpPitProvider } from '$lib/server/universe/fmp-pit';
 import { selectUniverseSymbols } from '$lib/server/universe/select';
+import { fetchSectors, type SectorMap } from '$lib/server/universe/sectors';
 import { FMP_KEY, getSetting, saveRun } from '$lib/server/db/repository';
 
 /** Default and hard cap for index-resolved universes (keeps fetch fan-out sane). */
@@ -144,7 +145,38 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		throw error(502, { message: `Market data unavailable: ${message}` });
 	}
 
-	const result = runBacktest(runSpec, candlesByTicker);
+	// §4c Sector exposure cap: when configured, resolve a symbol→sector map for the
+	// run's tickers (same FMP key resolution as the index/universe path) BEFORE the
+	// engine. Failure is graceful and non-fatal — push a warning and run without the
+	// cap (the engine also warns once if it then finds no sector for a candidate).
+	let sectors: SectorMap | undefined;
+	if (runSpec.risk.maxPositionsPerSector !== undefined) {
+		const apiKey = resolveFmpKey();
+		if (!apiKey) {
+			warnings.push(
+				'Sector exposure cap is configured but no FMP API key is available; ' +
+					'running without the cap. Add a key in Settings (or set FMP_API_KEY).'
+			);
+		} else {
+			try {
+				const resolved = await fetchSectors(uniqueTickers, apiKey, fetch);
+				sectors = resolved.sectors;
+				if (resolved.gaps.length > 0) {
+					warnings.push(
+						'Sector data coverage gaps (cap not enforced for affected symbols): ' +
+							resolved.gaps.map((g) => g.detail).join(' ')
+					);
+				}
+			} catch (e) {
+				warnings.push(
+					`Sector data fetch for the sector cap failed (${e instanceof Error ? e.message : 'unknown error'}); ` +
+						'running without the cap.'
+				);
+			}
+		}
+	}
+
+	const result = runBacktest(runSpec, candlesByTicker, { sectors });
 
 	// Surface universe-resolution warnings (capping, gaps, fallbacks) on the run.
 	if (warnings.length > 0) result.warnings.unshift(...warnings);

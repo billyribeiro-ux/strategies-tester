@@ -1675,3 +1675,288 @@ describe('runBacktest — correlation + margin together (§5)', () => {
 		expect(a).toEqual(b);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// §4c Re-entry cooldown
+// ---------------------------------------------------------------------------
+
+describe('runBacktest — re-entry cooldown (§4c)', () => {
+	// Two clean long cycles on ONE ticker:
+	//   crossover 105 @idx3 → entry fills @idx4 (open 106); crossunder 105 @idx5 →
+	//   exit fills @idx6 (open 104) → first position closes at bar index 6.
+	//   crossover 105 @idx8 → second entry would fill @idx9; crossunder @idx10 →
+	//   exit @idx11. The cooldown gate checks the SIGNAL bar (idx8) against the last
+	//   exit bar index (6): blocked iff 8 <= 6 + cooldown.
+	const reentryRules = {
+		longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+		longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+		shortEntry: emptyGroup(),
+		shortExit: emptyGroup()
+	};
+	const reentryData = () => ({
+		TEST: candles([100, 102, 104, 106, 108, 104, 102, 104, 106, 108, 104, 102, 100])
+	});
+
+	it('blocks a re-entry within the cooldown window and warns', () => {
+		// cooldown 2: signal idx8 ≤ 6 + 2 = 8 → blocked → only the first cycle trades.
+		const spec = baseSpec({
+			risk: { ...baseSpec().risk, reentryCooldownBars: 2 },
+			rules: reentryRules
+		});
+		const result = runBacktest(spec, reentryData());
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].exitReason).toBe('signalExit');
+		expect(result.warnings.some((w) => /Re-entry cooldown blocked/i.test(w))).toBe(true);
+	});
+
+	it('allows the re-entry once the cooldown has elapsed', () => {
+		// cooldown 1: signal idx8 ≤ 6 + 1 = 7 is false → the second cycle trades too.
+		const spec = baseSpec({
+			risk: { ...baseSpec().risk, reentryCooldownBars: 1 },
+			rules: reentryRules
+		});
+		const result = runBacktest(spec, reentryData());
+		expect(result.trades.length).toBe(2);
+		expect(result.warnings.some((w) => /Re-entry cooldown blocked/i.test(w))).toBe(false);
+	});
+
+	it('does not block anything when the cooldown is off (undefined)', () => {
+		const spec = baseSpec({ risk: { ...baseSpec().risk }, rules: reentryRules });
+		const result = runBacktest(spec, reentryData());
+		expect(result.trades.length).toBe(2);
+		expect(result.warnings.some((w) => /Re-entry cooldown/i.test(w))).toBe(false);
+	});
+
+	it('is leak-free with the cooldown on (gate passes)', () => {
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const spec = baseSpec({
+			risk: { ...baseSpec().risk, reentryCooldownBars: 3 },
+			rules: reentryRules
+		});
+		expect(() => assertNoLookahead(spec, { TEST: candles(closes) })).not.toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// §4c Sector exposure cap
+// ---------------------------------------------------------------------------
+
+describe('runBacktest — sector exposure cap (§4c)', () => {
+	// Three tickers, all in the same sector, each crossing 105 once and staying open
+	// (no exit) → all three want a concurrent position. The cap limits how many open
+	// at once in that sector.
+	const sectorRules = {
+		longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+		longExit: emptyGroup(),
+		shortEntry: emptyGroup(),
+		shortExit: emptyGroup()
+	};
+	const risingSeries = [100, 102, 104, 106, 108, 110, 112];
+	function threeTickerSpec(maxPositionsPerSector?: number): StrategySpec {
+		return baseSpec({
+			universe: { ...baseSpec().universe, tickers: ['AAA', 'BBB', 'CCC'] },
+			risk: {
+				...baseSpec().risk,
+				maxConcurrentPositions: 3,
+				positionSizing: { mode: 'fixedShares', shares: 10 },
+				...(maxPositionsPerSector !== undefined ? { maxPositionsPerSector } : {})
+			},
+			rules: sectorRules
+		});
+	}
+	const threeTickerData = () => ({
+		AAA: candles(risingSeries),
+		BBB: candles(risingSeries),
+		CCC: candles(risingSeries)
+	});
+	const sameSector = { AAA: 'Technology', BBB: 'Technology', CCC: 'Technology' };
+
+	it('blocks the 3rd position in a sector when the cap is 2, and warns', () => {
+		const result = runBacktest(threeTickerSpec(2), threeTickerData(), { sectors: sameSector });
+		// AAA + BBB open (count would-be 1→ok, 2→ok); CCC blocked (would be 3 > 2).
+		expect(result.trades.length).toBe(2);
+		const tickers = result.trades.map((t) => t.ticker).sort();
+		expect(tickers).toEqual(['AAA', 'BBB']);
+		expect(result.warnings.some((w) => /Sector exposure cap blocked/i.test(w))).toBe(true);
+	});
+
+	it('allows all positions when the cap is off (no maxPositionsPerSector)', () => {
+		const result = runBacktest(threeTickerSpec(undefined), threeTickerData(), {
+			sectors: sameSector
+		});
+		expect(result.trades.length).toBe(3);
+		expect(result.warnings.some((w) => /Sector exposure cap/i.test(w))).toBe(false);
+	});
+
+	it('does not constrain positions across DIFFERENT sectors', () => {
+		// Cap 1, but each ticker in its own sector → each sector holds at most 1 → all open.
+		const sectors = { AAA: 'Technology', BBB: 'Energy', CCC: 'Healthcare' };
+		const result = runBacktest(threeTickerSpec(1), threeTickerData(), { sectors });
+		expect(result.trades.length).toBe(3);
+		expect(result.warnings.some((w) => /Sector exposure cap blocked/i.test(w))).toBe(false);
+	});
+
+	it('allows entries and warns once when the cap is set but no sector map is supplied', () => {
+		// Cap 1 but NO sectors passed → cannot enforce → all open, one-time data warning.
+		const result = runBacktest(threeTickerSpec(1), threeTickerData());
+		expect(result.trades.length).toBe(3);
+		expect(result.warnings.some((w) => /no sector data was available/i.test(w))).toBe(true);
+	});
+
+	it('is deterministic with the sector cap on', () => {
+		const spec = threeTickerSpec(2);
+		const data = threeTickerData();
+		const a = normalize(runBacktest(spec, data, { sectors: sameSector }));
+		const b = normalize(runBacktest(spec, data, { sectors: sameSector }));
+		expect(a).toEqual(b);
+	});
+
+	it('is leak-free per-ticker with the sector cap on (gate passes)', () => {
+		// The leak gate isolates each ticker; with one symbol the sector cap is a no-op,
+		// so it cannot leak the future.
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const spec = baseSpec({
+			risk: { ...baseSpec().risk, maxPositionsPerSector: 2 },
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		expect(() => assertNoLookahead(spec, { TEST: candles(closes) })).not.toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// §5 Hard-to-borrow surcharge
+// ---------------------------------------------------------------------------
+
+describe('runBacktest — hard-to-borrow surcharge (§5)', () => {
+	// Short crossunder 105 @idx2 → entry fills @idx3 (open 100); crossover 95 @idx7 →
+	// exit fills @idx8 (open 98). Same price path; only the HTB config differs.
+	const htbRules = {
+		longEntry: emptyGroup(),
+		longExit: emptyGroup(),
+		shortEntry: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+		shortExit: group('AND', [binary(price('close'), 'crossover', constant(95))])
+	};
+	const htbData = () => ({ TEST: candles([110, 108, 104, 100, 96, 92, 94, 96, 98]) });
+
+	it('adds an extra borrow charge to a LISTED short on top of short borrow APR', () => {
+		// Both runs charge shortBorrowAPR 50; the HTB run additionally charges
+		// hardToBorrowAPR 50 on the listed ticker → its pnl is strictly lower by exactly
+		// the HTB accrual: entryNotional × (HTB_APR/100) × (tf/yr) × barsHeld.
+		const baseRisk = { ...baseSpec().risk, shortBorrowAPR: 50 };
+		const noHtb = runBacktest(baseSpec({ rules: htbRules, risk: baseRisk }), htbData());
+		const withHtb = runBacktest(
+			baseSpec({
+				rules: htbRules,
+				risk: { ...baseRisk, hardToBorrowSymbols: ['TEST'], hardToBorrowAPR: 50 }
+			}),
+			htbData()
+		);
+		expect(noHtb.trades.length).toBe(1);
+		expect(withHtb.trades.length).toBe(1);
+		const a = noHtb.trades[0];
+		const b = withHtb.trades[0];
+		// Identical fills (same price path) — only the HTB surcharge differs.
+		expect(a.entryPrice).toBe(b.entryPrice);
+		expect(a.exitPrice).toBe(b.exitPrice);
+		expect(a.qty).toBe(b.qty);
+		expect(b.pnl).toBeLessThan(a.pnl);
+
+		const perBar = (50 / 100) * (86_400 / 31_557_600);
+		const expectedExtra = b.entryPrice * b.qty * perBar * b.barsHeld;
+		expect(a.pnl - b.pnl).toBeCloseTo(expectedExtra, 6);
+	});
+
+	it('does not surcharge a short whose ticker is NOT in the hard-to-borrow list', () => {
+		const baseRisk = { ...baseSpec().risk, shortBorrowAPR: 50 };
+		const noHtb = runBacktest(baseSpec({ rules: htbRules, risk: baseRisk }), htbData());
+		const otherListed = runBacktest(
+			baseSpec({
+				rules: htbRules,
+				// A DIFFERENT symbol is listed → TEST is unaffected → identical pnl.
+				risk: { ...baseRisk, hardToBorrowSymbols: ['OTHER'], hardToBorrowAPR: 50 }
+			}),
+			htbData()
+		);
+		expect(noHtb.trades.length).toBe(1);
+		expect(otherListed.trades.length).toBe(1);
+		expect(otherListed.trades[0].pnl).toBeCloseTo(noHtb.trades[0].pnl, 9);
+	});
+
+	it('does not affect long trades even when the long ticker is listed', () => {
+		const rules = {
+			longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+			longExit: group('AND', [binary(price('close'), 'crossunder', constant(115))]),
+			shortEntry: emptyGroup(),
+			shortExit: emptyGroup()
+		};
+		const data = { TEST: candles([100, 104, 106, 110, 116, 120, 118, 114, 110]) };
+		const noHtb = runBacktest(baseSpec({ rules }), data);
+		const withHtb = runBacktest(
+			baseSpec({
+				rules,
+				risk: { ...baseSpec().risk, hardToBorrowSymbols: ['TEST'], hardToBorrowAPR: 50 }
+			}),
+			data
+		);
+		expect(noHtb.trades.length).toBe(1);
+		expect(withHtb.trades.length).toBe(1);
+		expect(withHtb.trades[0].pnl).toBeCloseTo(noHtb.trades[0].pnl, 9);
+	});
+
+	it('is leak-free with the HTB surcharge on (gate passes over a zigzag)', () => {
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				shortBorrowAPR: 50,
+				hardToBorrowSymbols: ['TEST'],
+				hardToBorrowAPR: 50
+			},
+			rules: {
+				longEntry: emptyGroup(),
+				longExit: emptyGroup(),
+				shortEntry: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortExit: group('AND', [binary(price('close'), 'crossover', constant(105))])
+			}
+		});
+		expect(() => assertNoLookahead(spec, { TEST: candles(closes) })).not.toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// §4c/§5 All three lifecycle controls together
+// ---------------------------------------------------------------------------
+
+describe('runBacktest — re-entry + sector cap + HTB together (§4c/§5)', () => {
+	it('is leak-free per-ticker and deterministic with all three on', () => {
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const spec = baseSpec({
+			universe: { ...baseSpec().universe, tickers: ['TEST'] },
+			risk: {
+				...baseSpec().risk,
+				shortBorrowAPR: 30,
+				reentryCooldownBars: 3,
+				maxPositionsPerSector: 2,
+				hardToBorrowSymbols: ['TEST'],
+				hardToBorrowAPR: 40
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortExit: group('AND', [binary(price('close'), 'crossover', constant(105))])
+			}
+		});
+		const data = { TEST: candles(closes) };
+		const sectors = { TEST: 'Technology' };
+		expect(() => assertNoLookahead(spec, data)).not.toThrow();
+		const a = normalize(runBacktest(spec, data, { sectors }));
+		const b = normalize(runBacktest(spec, data, { sectors }));
+		expect(a).toEqual(b);
+	});
+});
