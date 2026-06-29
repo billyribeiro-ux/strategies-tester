@@ -420,6 +420,66 @@ function validateRisk(risk: Risk, ctx: Ctx) {
 		ctx
 	);
 	validateScaleOut(risk, ctx);
+	validateCorrelationLimit(risk, ctx);
+	validateMargin(risk, ctx);
+}
+
+/**
+ * §5 Correlation-exposure limit coherence: `maxCorrelation` (when set) must be in
+ * (0, 1]; `correlationLookback` (only meaningful with `maxCorrelation`) must be a
+ * positive integer, and a too-small window makes the estimate noisy → warned.
+ */
+function validateCorrelationLimit(risk: Risk, ctx: Ctx) {
+	const MIN_LOOKBACK = 20;
+	if (risk.maxCorrelation !== undefined && !(risk.maxCorrelation > 0 && risk.maxCorrelation <= 1)) {
+		add(
+			ctx,
+			'error',
+			'risk.maxCorrelation',
+			'Max correlation must be between 0 (exclusive) and 1 (inclusive).'
+		);
+	}
+	if (risk.correlationLookback !== undefined) {
+		if (!isPositiveInt(risk.correlationLookback)) {
+			add(
+				ctx,
+				'error',
+				'risk.correlationLookback',
+				'Correlation lookback must be a positive whole number of bars.'
+			);
+		} else if (risk.maxCorrelation !== undefined && risk.correlationLookback < MIN_LOOKBACK) {
+			add(
+				ctx,
+				'warning',
+				'risk.correlationLookback',
+				`A correlation lookback below ${MIN_LOOKBACK} bars gives a noisy estimate; consider a longer window.`
+			);
+		}
+	}
+}
+
+/**
+ * §5 Margin / leverage coherence: `maxLeverage` (when set) must be ≥ 1 (a value of
+ * 1 = cash-only). `marginInterestAPR` must be ≥ 0, and charging margin interest
+ * without any leverage (maxLeverage 1 / unset → no borrowed cash) has no effect →
+ * warned.
+ */
+function validateMargin(risk: Risk, ctx: Ctx) {
+	if (risk.maxLeverage !== undefined && !(risk.maxLeverage >= 1)) {
+		add(ctx, 'error', 'risk.maxLeverage', 'Max leverage must be at least 1 (1 = cash-only).');
+	}
+	if (risk.marginInterestAPR !== undefined) {
+		if (!(risk.marginInterestAPR >= 0)) {
+			add(ctx, 'error', 'risk.marginInterestAPR', 'Margin interest APR cannot be negative.');
+		} else if (risk.marginInterestAPR > 0 && (risk.maxLeverage ?? 1) <= 1) {
+			add(
+				ctx,
+				'warning',
+				'risk.marginInterestAPR',
+				'Margin interest has no effect without leverage (set max leverage above 1 to borrow cash).'
+			);
+		}
+	}
 }
 
 /**

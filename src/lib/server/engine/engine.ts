@@ -31,6 +31,7 @@ import { CAPABILITIES } from '$lib/capabilities/catalog';
 import { getComputeFn } from '../indicators/registry';
 import { ParamReader } from '../indicators/compute';
 import { alignToBase, resampleBySeconds } from './mtf';
+import { pearson, closeReturns } from './correlation';
 import { evaluateGroup, type EvalContext, type IndicatorSeriesMap } from './evaluate';
 import {
 	computeDistribution,
@@ -83,6 +84,15 @@ interface OpenPosition {
 	 * levels at index >= scaledLevels remain eligible.
 	 */
 	scaledLevels: number;
+	/**
+	 * §5 Margin: cash borrowed at entry to finance this LONG position on margin,
+	 * attributed as `min(entryNotional, max(0, grossExposureAfterEntry −
+	 * equityAtEntry))`. Margin interest (`marginInterestAPR`) accrues on this amount
+	 * over the bars held and is charged at close. 0 when no leverage is used (incl.
+	 * all shorts and any maxLeverage = 1 run). Pyramided adds grow it by the add's
+	 * own attributed borrow so interest tracks the full borrowed cash.
+	 */
+	marginBorrowed: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -497,6 +507,38 @@ export function runBacktest(
 	const heatCapPct = typeof rawHeat === 'number' && rawHeat > 0 ? rawHeat : null;
 	let heatCapBlocks = 0;
 
+	// Correlation-exposure limit (spec 5): block a NEW entry on ticker X if its
+	// close-to-close returns are too correlated (|corr| > maxCorr) with any open
+	// position on a DIFFERENT ticker, over the trailing lookback aligned on common
+	// timestamps <= the entry decision time (point-in-time -> leak-free).
+	const rawMaxCorr = spec.risk.maxCorrelation;
+	const maxCorr = typeof rawMaxCorr === 'number' && rawMaxCorr > 0 ? rawMaxCorr : null;
+	const rawCorrLookback = spec.risk.correlationLookback;
+	const corrLookback =
+		typeof rawCorrLookback === 'number' && rawCorrLookback > 0 ? Math.floor(rawCorrLookback) : 60;
+	// Min paired return observations before the correlation check is trusted; below
+	// it the pair is skipped (allowed) rather than blocking on a noisy estimate.
+	const CORR_MIN_PAIRS = 10;
+	let correlationBlocks = 0;
+
+	// Margin / leverage (spec 5): buying power = equity x maxLeverage. Gross
+	// exposure (sum |qty x price| incl. the candidate) may not exceed it. The cap is
+	// OFF unless `maxLeverage` is EXPLICITLY set, so the default preserves today's
+	// behaviour EXACTLY (the engine historically applied no cash/buying-power gate —
+	// cash could go negative). When set, maxLeverage = 1 enforces a cash-only
+	// constraint (gross may not exceed equity); > 1 permits that multiple of equity.
+	const rawMaxLev = spec.risk.maxLeverage;
+	const leverageCapOn = typeof rawMaxLev === 'number' && rawMaxLev >= 1;
+	const maxLeverage = leverageCapOn ? (rawMaxLev as number) : 1;
+	let leverageBlocks = 0;
+	// Margin interest: annual rate (percent) charged on borrowed cash for LONG
+	// positions financed on margin. undefined/<=0 disables it. Per-bar fraction
+	// mirrors the short-borrow accrual.
+	const rawMarginApr = spec.risk.marginInterestAPR;
+	const marginApr = typeof rawMarginApr === 'number' && rawMarginApr > 0 ? rawMarginApr : null;
+	const marginPerBarRate =
+		marginApr !== null ? (marginApr / 100) * (timeframeSeconds / SECONDS_PER_YEAR) : 0;
+
 	// §2.3 Liquidity cap: limit a single fill to a share of the fill bar's volume.
 	// undefined/<=0 disables the cap. We warn ONCE per run if it ever bites.
 	const rawCap = spec.execution.maxBarVolumePct;
@@ -717,6 +759,21 @@ export function runBacktest(
 
 	if (heatCapBlocks > 0) {
 		warnings.push(`Portfolio heat cap blocked ${heatCapBlocks} entries.`);
+	}
+
+	if (correlationBlocks > 0) {
+		warnings.push(
+			`Correlation limit blocked ${correlationBlocks} ` +
+				`${correlationBlocks === 1 ? 'entry' : 'entries'} ` +
+				`(|correlation| above ${maxCorr}).`
+		);
+	}
+
+	if (leverageBlocks > 0) {
+		warnings.push(
+			`Margin / leverage cap blocked ${leverageBlocks} ` +
+				`${leverageBlocks === 1 ? 'entry' : 'entries'} (gross exposure above ${maxLeverage}× equity).`
+		);
 	}
 
 	const computedAt = new Date().toISOString();
@@ -945,6 +1002,130 @@ export function runBacktest(
 		return false;
 	}
 
+	/**
+	 * Gross exposure of the currently-open positions, marked at `timeMs`: the sum of
+	 * |qty x price| across all open positions. Used by the margin/leverage cap. Each
+	 * position is marked at the timeline price for `timeMs` (the same point-in-time
+	 * mark `markEquity` uses), falling back to its last known close on a gap.
+	 */
+	function currentGrossExposure(timeMs: number): number {
+		let gross = 0;
+		for (const pos of openPositions) {
+			const td = tickerByName.get(pos.ticker);
+			if (!td) continue;
+			const i = td.indexByTime.get(timeMs);
+			const price = i !== undefined ? td.candles[i].c : lastKnownClose(td, timeMs);
+			if (Number.isFinite(price)) gross += pos.qty * Math.abs(price);
+		}
+		return gross;
+	}
+
+	/**
+	 * Margin / leverage cap (spec 5). Returns true if adding a candidate leg of
+	 * `candidateNotional` (= qty x |fillPrice|) would push GROSS exposure
+	 * (sum |qty x price| across open positions + the candidate) above buying power
+	 * (equity x maxLeverage). With maxLeverage = 1 this is exactly the cash-only
+	 * constraint (gross may not exceed equity). Counts a block when it bites.
+	 * `timeMs` is the candidate's fill-bar timestamp, marking open positions
+	 * point-in-time.
+	 */
+	function exceedsLeverage(candidateNotional: number, equity: number, timeMs: number): boolean {
+		if (!leverageCapOn || !(candidateNotional > 0)) return false;
+		const buyingPower = Math.max(0, equity) * maxLeverage;
+		const grossAfter = currentGrossExposure(timeMs) + candidateNotional;
+		if (grossAfter > buyingPower + 1e-9) {
+			leverageBlocks++;
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Borrowed cash attributed to a new LONG leg of `candidateNotional` at entry,
+	 * given the post-entry gross exposure and equity (spec 5 margin-interest model):
+	 * `min(candidateNotional, max(0, grossAfter - equity))`. The run-wide shortfall
+	 * of equity vs gross is the borrowed cash; we attribute at most this leg's own
+	 * notional to it. 0 for shorts and whenever no leverage is used (grossAfter <=
+	 * equity, e.g. maxLeverage = 1). Interest later accrues on this amount.
+	 */
+	function attributedMarginBorrow(
+		candidateNotional: number,
+		grossAfter: number,
+		equity: number,
+		side: TradeSide
+	): number {
+		// Only attribute borrowed cash when leverage is explicitly enabled and margin
+		// interest is configured; longs only. Otherwise there is no margin borrowing.
+		if (!leverageCapOn || side !== 'long' || marginApr === null) return 0;
+		const shortfall = Math.max(0, grossAfter - Math.max(0, equity));
+		return Math.min(candidateNotional, shortfall);
+	}
+
+	/**
+	 * Close series of a ticker up to AND INCLUDING bar `idx` (point-in-time): the
+	 * closes at bars <= idx, keyed by timestamp ms. Never reads bars after `idx`, so
+	 * the correlation check it feeds cannot leak the future.
+	 */
+	function closesByTimeUpTo(td: TickerData, idx: number): Map<number, number> {
+		const out = new Map<number, number>();
+		const upTo = Math.min(idx, td.candles.length - 1);
+		for (let i = 0; i <= upTo; i++) out.set(Date.parse(td.candles[i].t), td.candles[i].c);
+		return out;
+	}
+
+	/**
+	 * Correlation-exposure limit (spec 5). Returns true if a NEW position on `td`
+	 * (decision bar `idx`, decision time = candle[idx].t) would be too correlated
+	 * (|Pearson corr| > maxCorr) with ANY currently-open position on a DIFFERENT
+	 * ticker. For each such open position the closes of both tickers are taken at
+	 * their bars <= the decision time, intersected on common timestamps, trimmed to
+	 * the trailing `corrLookback + 1` closes, and turned into close-to-close returns;
+	 * a pair with fewer than CORR_MIN_PAIRS paired return observations is SKIPPED
+	 * (allowed). Same-ticker pyramiding never reaches here. Leak-free: only bars at or
+	 * before the decision time are ever read. Counts a block when it bites.
+	 */
+	function correlationBlocked(td: TickerData, idx: number): boolean {
+		if (maxCorr === null) return false;
+		const decisionMs = Date.parse(td.candles[idx].t);
+		// Distinct OTHER tickers that currently hold an open position.
+		const others = new Set<string>();
+		for (const p of openPositions) if (p.ticker !== td.ticker) others.add(p.ticker);
+		if (others.size === 0) return false;
+		const xCloses = closesByTimeUpTo(td, idx);
+		for (const otherTicker of others) {
+			const other = tickerByName.get(otherTicker);
+			if (!other) continue;
+			const otherIdx = other.indexByTime.get(decisionMs);
+			// Restrict Y's closes to bars whose timestamp is <= the decision time. When Y
+			// has no bar exactly at decisionMs, use the count of its bars strictly before it.
+			const yUpToIdx =
+				otherIdx !== undefined
+					? otherIdx
+					: other.candles.filter((c) => Date.parse(c.t) <= decisionMs).length - 1;
+			if (yUpToIdx < 0) continue;
+			const yCloses = closesByTimeUpTo(other, yUpToIdx);
+			// Common timestamps (<= decision time), ascending.
+			const commonTimes: number[] = [];
+			for (const t of xCloses.keys()) if (yCloses.has(t)) commonTimes.push(t);
+			commonTimes.sort((a, b) => a - b);
+			// Trailing window: need lookback+1 closes to form `lookback` returns.
+			const window = commonTimes.slice(Math.max(0, commonTimes.length - (corrLookback + 1)));
+			if (window.length < 2) continue;
+			const xc = window.map((t) => xCloses.get(t) as number);
+			const yc = window.map((t) => yCloses.get(t) as number);
+			const xr = closeReturns(xc);
+			const yr = closeReturns(yc);
+			if (xr.length < CORR_MIN_PAIRS) continue; // too few paired obs -> skip (allow)
+			const r = pearson(xr, yr);
+			if (!Number.isFinite(r)) continue; // undefined corr -> skip (allow)
+			if (Math.abs(r) > maxCorr) {
+				correlationBlocks++;
+				return true;
+			}
+		}
+		return false;
+	}
+
 	function tryEntries(td: TickerData, idx: number, side: TradeSide) {
 		const entryGroup = side === 'long' ? spec.rules.longEntry : spec.rules.shortEntry;
 		if (!evaluateGroup(entryGroup, td.ctx, idx)) return;
@@ -981,6 +1162,10 @@ export function runBacktest(
 			sizingAtr,
 			closedStats
 		);
+		// Correlation-exposure limit (spec 5): skip a NEW entry too correlated with any
+		// open position on a DIFFERENT ticker (point-in-time; same-ticker pyramiding is
+		// handled by addToPosition and never reaches here).
+		if (desiredQty > 0 && correlationBlocked(td, fill.barIndex)) return;
 		// §5 Portfolio heat cap: skip the entry if it would push total open risk
 		// (qty × |entry − stop| across open positions + this one) over the limit.
 		if (desiredQty > 0 && exceedsHeatCap(desiredQty, fillPrice, provisionalStop, equity)) return;
@@ -988,10 +1173,23 @@ export function runBacktest(
 		const qty = applyLiquidityCap(desiredQty, td, fill.barIndex);
 		if (qty <= 0) return;
 
+		// Margin / leverage cap (spec 5): skip the entry if its gross exposure would
+		// push total gross above buying power (equity x maxLeverage). With maxLeverage 1
+		// this is the cash-only constraint. Independent of the heat cap above.
+		const candidateNotional = qty * fillPrice;
+		if (exceedsLeverage(candidateNotional, equity, Date.parse(td.candles[fill.barIndex].t))) return;
+
 		const cost = qty * fillPrice;
 		const commission = commissionFor(qty, fillPrice, spec);
 		// Cash accounting: longs pay cash + fees; shorts receive proceeds - fees.
 		cash += side === 'long' ? -(cost + commission) : cost - commission;
+
+		// Margin borrowed attributed to this LONG leg (0 for shorts / no leverage), for
+		// the margin-interest accrual at close. Gross AFTER this entry = open gross at
+		// the fill time + this leg's notional.
+		const grossAfterEntry =
+			currentGrossExposure(Date.parse(td.candles[fill.barIndex].t)) + candidateNotional;
+		const marginBorrowed = attributedMarginBorrow(candidateNotional, grossAfterEntry, equity, side);
 
 		const stopPrice = provisionalStop;
 		const targetPrice = computeTargetPrice(spec, side, fillPrice, stopPrice, atrAtEntry);
@@ -1012,7 +1210,8 @@ export function runBacktest(
 			trailPrice: null,
 			atrAtEntry,
 			originalQty: qty,
-			scaledLevels: 0
+			scaledLevels: 0,
+			marginBorrowed
 		};
 		// Seed entry-bar excursion with the fill bar's range.
 		const fillBar = td.candles[fill.barIndex];
@@ -1039,9 +1238,20 @@ export function runBacktest(
 		const addQty = applyLiquidityCap(desiredAddQty, td, fill.barIndex);
 		if (addQty <= 0) return;
 
+		// Margin / leverage cap (spec 5) also constrains pyramided adds: skip the add if
+		// it would push total gross exposure above buying power (equity x maxLeverage).
+		const addNotional = addQty * fillPrice;
+		if (exceedsLeverage(addNotional, equity, Date.parse(td.candles[fill.barIndex].t))) return;
+
 		const cost = addQty * fillPrice;
 		const commission = commissionFor(addQty, fillPrice, spec);
 		cash += side === 'long' ? -(cost + commission) : cost - commission;
+
+		// Grow the position's attributed margin borrow by the add's own borrowed cash so
+		// interest accrues on the full leveraged notional.
+		const grossAfterAdd =
+			currentGrossExposure(Date.parse(td.candles[fill.barIndex].t)) + addNotional;
+		pos.marginBorrowed += attributedMarginBorrow(addNotional, grossAfterAdd, equity, side);
 
 		// New average entry price.
 		const totalQty = pos.qty + addQty;
@@ -1089,12 +1299,30 @@ export function runBacktest(
 				: 0;
 		if (borrowCost > 0) cash -= borrowCost;
 
+		// Margin interest (spec 5): mirror the short-borrow accrual for LONG positions
+		// financed on margin. The position's attributed `marginBorrowed` is the cash
+		// borrowed at entry; for a partial close we accrue only the pro-rata share of it
+		// (qty / pos.qty), so the per-leg charge is well-defined and deterministic.
+		// Approximation: interest is charged on the entry-time attributed borrow held
+		// flat for barsHeld bars (no intra-trade re-marking) — documented and simple.
+		const marginInterest =
+			pos.side === 'long' && marginPerBarRate > 0 && pos.marginBorrowed > 0 && pos.qty > 0
+				? pos.marginBorrowed * (qty / pos.qty) * marginPerBarRate * barsHeld
+				: 0;
+		if (marginInterest > 0) cash -= marginInterest;
+		// On a PARTIAL close, retire the pro-rata share of the attributed borrow so the
+		// remaining runner accrues interest only on its own borrowed cash. (A full close
+		// drops the position, so the residual is irrelevant there.)
+		if (pos.marginBorrowed > 0 && pos.qty > 0 && qty < pos.qty) {
+			pos.marginBorrowed -= pos.marginBorrowed * (qty / pos.qty);
+		}
+
 		const grossPnl =
 			pos.side === 'long' ? (exitPrice - pos.entryPrice) * qty : (pos.entryPrice - exitPrice) * qty;
 		// Entry commission is already reflected in cash; approximate per-trade net
 		// P&L by subtracting both legs' commissions and any borrow cost from the gross.
 		const entryCommission = commissionFor(qty, pos.entryPrice, spec);
-		const pnl = grossPnl - commission - entryCommission - borrowCost;
+		const pnl = grossPnl - commission - entryCommission - borrowCost - marginInterest;
 		const entryNotional = pos.entryPrice * qty;
 		const pnlPct = entryNotional > 0 ? pnl / entryNotional : 0;
 		const rMultiple =

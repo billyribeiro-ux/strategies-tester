@@ -374,6 +374,44 @@ export interface Risk {
 	 * equity. Entries with no stop are not constrained. `undefined` = off. In (0, 100].
 	 */
 	maxPortfolioHeatPercent?: number;
+	/**
+	 * §5 Correlation-exposure limit. Before opening a NEW position on ticker X, the
+	 * Pearson correlation of close-to-close returns between X and each currently-open
+	 * position on a DIFFERENT ticker Y is computed over the trailing
+	 * `correlationLookback` bars, aligned on the common timestamps that are ≤ the
+	 * entry decision time (point-in-time — never future bars). If `|corr|` with ANY
+	 * open position exceeds this threshold, the new entry is SKIPPED. Same-ticker
+	 * pyramiding is exempt. Pairs with fewer than a small floor of paired
+	 * observations are skipped (treated as allowed). `undefined` = off. In (0, 1].
+	 */
+	maxCorrelation?: number;
+	/**
+	 * §5 Lookback window (in bars) for the correlation-exposure limit's
+	 * close-to-close returns. Only consulted when `maxCorrelation` is set. Positive
+	 * integer; `undefined` defaults to 60 in the engine. Should be ≥ ~20 so the
+	 * correlation estimate is meaningful.
+	 */
+	correlationLookback?: number;
+	/**
+	 * §5 Margin / leverage. Maximum gross exposure as a multiple of equity: buying
+	 * power = equity × maxLeverage, and the resulting GROSS exposure
+	 * (Σ |qty × price| across all open positions including the candidate) may not
+	 * exceed it — entries (and pyramided adds) that would breach it are SKIPPED.
+	 * `undefined`/`1` = cash-only (cannot exceed equity), exactly today's behaviour.
+	 * The portfolio heat cap is independent and still enforced. ≥ 1.
+	 */
+	maxLeverage?: number;
+	/**
+	 * §5 Margin interest: annual rate, in percent, charged on the cash BORROWED to
+	 * finance LONG positions on margin (when `maxLeverage > 1`). At entry the
+	 * borrowed cash attributed to a long position is
+	 * `min(entryNotional, max(0, grossExposureAfterEntry − equityAtEntry))`; at close
+	 * it accrues `borrowedAttributed × (APR/100) × (timeframeSeconds/31_557_600) ×
+	 * barsHeld`, deducted from cash and the trade's P&L (mirrors the short-borrow
+	 * accrual). Shorts are unaffected here. `undefined`/`0` = no interest; with
+	 * `maxLeverage = 1` the borrowed amount is 0 so there is no change. In [0, ∞).
+	 */
+	marginInterestAPR?: number;
 }
 
 // ---------------------------------------------------------------------------

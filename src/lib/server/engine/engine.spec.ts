@@ -1315,3 +1315,266 @@ describe('runBacktest — multi-timeframe indicator reference (§3 / §4a)', () 
 		expect(a.trades).toEqual(b.trades);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// §5 Correlation-exposure limit
+// ---------------------------------------------------------------------------
+
+describe('runBacktest — correlation-exposure limit (§5)', () => {
+	// Two tickers with IDENTICAL close series → identical close-to-close returns →
+	// Pearson correlation of +1. The series stays below 105 for ~16 bars (≥10 return
+	// observations) then crosses 105 once, so the correlation check has enough paired
+	// history at the entry decision and is meaningful (not skipped by the floor).
+	function corrSeries(): number[] {
+		const out: number[] = [];
+		for (let i = 0; i < 30; i++) {
+			out.push(i < 16 ? 100 + 0.5 * Math.sin(i / 2) : 102 + (i - 15) * 1.0);
+		}
+		return out;
+	}
+	const corrRules = {
+		longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+		longExit: emptyGroup(),
+		shortEntry: emptyGroup(),
+		shortExit: emptyGroup()
+	};
+
+	function twoTickerSpec(maxCorrelation?: number): StrategySpec {
+		return baseSpec({
+			universe: { ...baseSpec().universe, tickers: ['AAA', 'BBB'] },
+			risk: {
+				...baseSpec().risk,
+				maxConcurrentPositions: 2,
+				positionSizing: { mode: 'fixedShares', shares: 10 },
+				...(maxCorrelation !== undefined ? { maxCorrelation, correlationLookback: 20 } : {})
+			},
+			rules: corrRules
+		});
+	}
+
+	it('blocks the second (correlated) entry and warns', () => {
+		const series = corrSeries();
+		const data = { AAA: candles(series), BBB: candles(series) };
+		const result = runBacktest(twoTickerSpec(0.9), data);
+		// AAA opens; BBB is blocked by |corr| = 1 > 0.9 → only one position/trade.
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].ticker).toBe('AAA');
+		expect(result.warnings.some((w) => /Correlation limit blocked/i.test(w))).toBe(true);
+	});
+
+	it('allows both entries when the limit is off (no maxCorrelation)', () => {
+		const series = corrSeries();
+		const data = { AAA: candles(series), BBB: candles(series) };
+		const result = runBacktest(twoTickerSpec(undefined), data);
+		// Both tickers open (and close at end-of-data) → two trades, no warning.
+		expect(result.trades.length).toBe(2);
+		const tickers = result.trades.map((t) => t.ticker).sort();
+		expect(tickers).toEqual(['AAA', 'BBB']);
+		expect(result.warnings.some((w) => /Correlation limit/i.test(w))).toBe(false);
+	});
+
+	it('allows both when the threshold is above the observed correlation', () => {
+		// |corr| = 1 exactly; a threshold of 1 (inclusive) means "blocked only when
+		// strictly greater", so corr 1 is NOT > 1 → both allowed.
+		const series = corrSeries();
+		const data = { AAA: candles(series), BBB: candles(series) };
+		const result = runBacktest(twoTickerSpec(1), data);
+		expect(result.trades.length).toBe(2);
+	});
+
+	it('is deterministic with the correlation limit on', () => {
+		const series = corrSeries();
+		const data = { AAA: candles(series), BBB: candles(series) };
+		const a = normalize(runBacktest(twoTickerSpec(0.9), data));
+		const b = normalize(runBacktest(twoTickerSpec(0.9), data));
+		expect(a).toEqual(b);
+	});
+
+	it('is leak-free (gate passes per-ticker with the limit on)', () => {
+		// The leak gate isolates each ticker as a single-symbol series; the correlation
+		// check is a no-op with one ticker (no OTHER positions), so it cannot leak.
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				maxConcurrentPositions: 2,
+				maxCorrelation: 0.8,
+				correlationLookback: 20
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		expect(() => assertNoLookahead(spec, { TEST: candles(closes) })).not.toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// §5 Margin / leverage
+// ---------------------------------------------------------------------------
+
+describe('runBacktest — margin / leverage (§5)', () => {
+	// percentEquity 150% wants gross exposure of 1.5× equity. With maxLeverage 1 the
+	// buying power equals equity, so the order is blocked; with maxLeverage 2 the
+	// buying power is 2× equity, so it fills (larger gross than cash alone allows).
+	const levRules = {
+		longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+		longExit: emptyGroup(),
+		shortEntry: emptyGroup(),
+		shortExit: emptyGroup()
+	};
+	const levData = { TEST: candles([100, 102, 104, 106, 108, 110, 112, 114]) };
+
+	function levSpec(maxLeverage?: number, marginInterestAPR?: number): StrategySpec {
+		return baseSpec({
+			risk: {
+				...baseSpec().risk,
+				initialCapital: 100_000,
+				positionSizing: { mode: 'percentEquity', percent: 150 },
+				...(maxLeverage !== undefined ? { maxLeverage } : {}),
+				...(marginInterestAPR !== undefined ? { marginInterestAPR } : {})
+			},
+			rules: levRules
+		});
+	}
+
+	it('maxLeverage 1 blocks an entry whose gross exposure exceeds cash, and warns', () => {
+		const result = runBacktest(levSpec(1), levData);
+		expect(result.trades.length).toBe(0);
+		expect(result.warnings.some((w) => /Margin \/ leverage cap blocked/i.test(w))).toBe(true);
+	});
+
+	it('maxLeverage 2 opens a position with gross exposure larger than cash', () => {
+		const result = runBacktest(levSpec(2), levData);
+		expect(result.trades.length).toBe(1);
+		const t = result.trades[0];
+		// Entry fills at open of the bar after the crossover. Gross = qty × entryPrice
+		// must exceed the 100k cash (it is ~150% of equity) yet fit 2× buying power.
+		const gross = t.qty * t.entryPrice;
+		expect(gross).toBeGreaterThan(100_000);
+		expect(gross).toBeLessThanOrEqual(200_000 + 1e-6);
+		expect(result.warnings.some((w) => /Margin \/ leverage cap blocked/i.test(w))).toBe(false);
+	});
+
+	it('default (no maxLeverage) preserves today behaviour: no buying-power gate', () => {
+		// Without maxLeverage set, the historical engine applies NO cash/leverage gate
+		// — the 150%-of-equity order fills even though it exceeds cash.
+		const result = runBacktest(levSpec(undefined), levData);
+		expect(result.trades.length).toBe(1);
+		expect(result.warnings.some((w) => /Margin \/ leverage cap/i.test(w))).toBe(false);
+	});
+
+	it('margin interest reduces a leveraged long pnl versus APR 0 on the same path', () => {
+		const noInterest = runBacktest(levSpec(2, 0), levData);
+		const withInterest = runBacktest(levSpec(2, 50), levData);
+		expect(noInterest.trades.length).toBe(1);
+		expect(withInterest.trades.length).toBe(1);
+		const a = noInterest.trades[0];
+		const b = withInterest.trades[0];
+		// Same fills (same price path & sizing) — only the margin interest differs.
+		expect(a.entryPrice).toBe(b.entryPrice);
+		expect(a.exitPrice).toBe(b.exitPrice);
+		expect(a.qty).toBe(b.qty);
+		// Margin interest strictly reduces the leveraged long's pnl.
+		expect(b.pnl).toBeLessThan(a.pnl);
+
+		// Reduction equals the accrued interest: borrowed × (APR/100) ×
+		// (timeframeSeconds/yr) × barsHeld, with borrowed = min(entryNotional,
+		// grossAfterEntry − equityAtEntry) and grossAfterEntry = entryNotional (single
+		// position) so borrowed = entryNotional − equityAtEntry.
+		const entryNotional = b.qty * b.entryPrice;
+		const borrowed = Math.max(0, entryNotional - 100_000);
+		const perBar = (50 / 100) * (86_400 / 31_557_600);
+		const expectedInterest = borrowed * perBar * b.barsHeld;
+		expect(borrowed).toBeGreaterThan(0);
+		expect(a.pnl - b.pnl).toBeCloseTo(expectedInterest, 6);
+	});
+
+	it('margin interest does not affect a short trade', () => {
+		const rules = {
+			longEntry: emptyGroup(),
+			longExit: emptyGroup(),
+			shortEntry: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+			shortExit: group('AND', [binary(price('close'), 'crossover', constant(95))])
+		};
+		const data = { TEST: candles([110, 108, 104, 100, 96, 92, 94, 96, 98]) };
+		const base = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'percentEquity', percent: 150 },
+				maxLeverage: 2
+			},
+			rules
+		});
+		const noInterest = runBacktest(base, data);
+		const withInterest = runBacktest(
+			baseSpec({ risk: { ...base.risk, marginInterestAPR: 50 }, rules }),
+			data
+		);
+		expect(noInterest.trades.length).toBe(1);
+		expect(withInterest.trades.length).toBe(1);
+		// Shorts accrue no margin interest, so pnl is identical.
+		expect(withInterest.trades[0].pnl).toBeCloseTo(noInterest.trades[0].pnl, 9);
+	});
+
+	it('is leak-free with leverage + margin interest on (gate passes)', () => {
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				positionSizing: { mode: 'percentEquity', percent: 150 },
+				maxLeverage: 2,
+				marginInterestAPR: 50
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		expect(() => assertNoLookahead(spec, { TEST: candles(closes) })).not.toThrow();
+	});
+
+	it('determinism holds with leverage + margin interest on', () => {
+		const spec = levSpec(2, 50);
+		const a = normalize(runBacktest(spec, levData));
+		const b = normalize(runBacktest(spec, levData));
+		expect(a).toEqual(b);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// §5 Correlation + margin together (combined leak-gate / determinism)
+// ---------------------------------------------------------------------------
+
+describe('runBacktest — correlation + margin together (§5)', () => {
+	it('is leak-free per-ticker and deterministic with both features on', () => {
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const spec = baseSpec({
+			risk: {
+				...baseSpec().risk,
+				maxConcurrentPositions: 2,
+				positionSizing: { mode: 'percentEquity', percent: 120 },
+				maxCorrelation: 0.8,
+				correlationLookback: 20,
+				maxLeverage: 2,
+				marginInterestAPR: 25
+			},
+			rules: {
+				longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+				longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+				shortEntry: emptyGroup(),
+				shortExit: emptyGroup()
+			}
+		});
+		const data = { TEST: candles(closes) };
+		expect(() => assertNoLookahead(spec, data)).not.toThrow();
+		const a = normalize(runBacktest(spec, data));
+		const b = normalize(runBacktest(spec, data));
+		expect(a).toEqual(b);
+	});
+});

@@ -322,6 +322,39 @@
 						(v) => store.setMaxPortfolioHeatPercent(v > 0 ? v : undefined)
 					}
 				/>
+				<NumberInput
+					label="Max correlation"
+					hint="Block entries correlated with open positions, 0 = off"
+					min={0}
+					max={1}
+					step={0.05}
+					bind:value={
+						() => risk.maxCorrelation ?? 0,
+						(v) => store.setMaxCorrelation(v > 0 ? Math.min(1, v) : undefined)
+					}
+				/>
+				{#if risk.maxCorrelation !== undefined}
+					<NumberInput
+						label="Correlation lookback"
+						hint="Bars of returns to correlate (≥ 20)"
+						min={1}
+						step={1}
+						bind:value={
+							() => risk.correlationLookback ?? 60,
+							(v) => store.setCorrelationLookback(v > 0 ? Math.round(v) : undefined)
+						}
+					/>
+				{/if}
+				<NumberInput
+					label="Max leverage"
+					suffix="×"
+					hint="Gross exposure cap as a multiple of equity, 1 = cash-only"
+					min={1}
+					step={0.5}
+					bind:value={
+						() => risk.maxLeverage ?? 1, (v) => store.setMaxLeverage(v > 1 ? v : undefined)
+					}
+				/>
 			</div>
 		</section>
 
@@ -838,6 +871,17 @@
 					step={0.5}
 					bind:value={
 						() => risk.shortBorrowAPR ?? 0, (v) => store.setShortBorrowAPR(v > 0 ? v : undefined)
+					}
+				/>
+				<NumberInput
+					label="Margin interest APR"
+					suffix="%"
+					hint="Annual interest on borrowed cash (needs leverage > 1), 0 = none"
+					min={0}
+					step={0.5}
+					bind:value={
+						() => risk.marginInterestAPR ?? 0,
+						(v) => store.setMarginInterestAPR(v > 0 ? v : undefined)
 					}
 				/>
 			</div>

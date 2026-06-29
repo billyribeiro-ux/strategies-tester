@@ -220,7 +220,11 @@ const riskSchema = z.object({
 	shortBorrowAPR: z.number().min(0).optional(),
 	maxBarsInTrade: z.number().int().positive().optional(),
 	maxDrawdownStopPercent: z.number().gt(0).max(100).optional(),
-	maxPortfolioHeatPercent: z.number().gt(0).max(100).optional()
+	maxPortfolioHeatPercent: z.number().gt(0).max(100).optional(),
+	maxCorrelation: z.number().gt(0).max(1).optional(),
+	correlationLookback: z.number().int().positive().optional(),
+	maxLeverage: z.number().min(1).optional(),
+	marginInterestAPR: z.number().min(0).optional()
 });
 
 const executionSchema = z.object({

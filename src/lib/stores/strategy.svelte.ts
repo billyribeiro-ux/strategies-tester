@@ -365,6 +365,45 @@ export class StrategyStore {
 		this.markDirty();
 	};
 
+	/**
+	 * §5 Correlation-exposure limit (max |corr| with any open position). Out-of-range
+	 * (must be in (0, 1]) or NaN clears it (undefined = off).
+	 */
+	setMaxCorrelation = (value: number | undefined) => {
+		this.spec.risk.maxCorrelation =
+			typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 1
+				? value
+				: undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §5 Correlation lookback (bars). Non-positive/NaN clears it (undefined → engine
+	 * default of 60 bars).
+	 */
+	setCorrelationLookback = (bars: number | undefined) => {
+		this.spec.risk.correlationLookback =
+			typeof bars === 'number' && Number.isFinite(bars) && bars > 0 ? Math.floor(bars) : undefined;
+		this.markDirty();
+	};
+
+	/**
+	 * §5 Max leverage (gross exposure as a multiple of equity). A value ≤ 1 or NaN
+	 * clears it (undefined = 1 = cash-only, today's behaviour).
+	 */
+	setMaxLeverage = (value: number | undefined) => {
+		this.spec.risk.maxLeverage =
+			typeof value === 'number' && Number.isFinite(value) && value > 1 ? value : undefined;
+		this.markDirty();
+	};
+
+	/** §5 Margin interest (annual %). Non-positive/NaN clears it (undefined = none). */
+	setMarginInterestAPR = (apr: number | undefined) => {
+		this.spec.risk.marginInterestAPR =
+			typeof apr === 'number' && Number.isFinite(apr) && apr > 0 ? apr : undefined;
+		this.markDirty();
+	};
+
 	setStopLoss = (stop: StopLoss) => {
 		this.spec.risk.stopLoss = stop;
 		this.markDirty();
