@@ -477,6 +477,11 @@ export function runBacktest(
 
 	const fillModel = spec.execution.fillOn;
 	const orderType = spec.execution.orderType;
+	// §5 Limit/stop offset (percent, ≥ 0). 0/undefined keeps the order reference at
+	// the signal close (plain limit/stop back-compat); positive values shift it.
+	const rawLimitOffset = spec.execution.limitOffsetPercent;
+	const limitOffsetPercent =
+		typeof rawLimitOffset === 'number' && rawLimitOffset > 0 ? rawLimitOffset : 0;
 	// G1 / §2.2: 'close' and 'signalPrice' fill at the SIGNAL bar — the engine
 	// cannot have known that price when the signal formed. These are research-only
 	// and lookahead-optimistic; surface it loudly so results aren't mistaken for
@@ -913,20 +918,35 @@ export function runBacktest(
 	/**
 	 * Resolve the ENTRY fill for a signal at bar `idx` on ticker `td`, honoring the
 	 * configured order type (§5). Returns the fill price/time/index, or null when
-	 * the order does NOT fill (no next bar, or a limit/stop order that the next bar
-	 * never reaches — it expires; no resting orders persist across multiple bars).
+	 * the order does NOT fill (no next bar, or a price-conditioned order that the
+	 * next bar never satisfies — it expires; no resting orders persist across
+	 * multiple bars).
 	 *
 	 * Leak-free: the order's reference price is the SIGNAL bar's close (known at
 	 * decision time, index ≤ idx) and the fill is decided using ONLY the next bar's
 	 * OHLC (the bar being filled on). No bar after the fill bar is ever consulted.
 	 *
+	 * The reference is shifted by `limitOffsetPercent` (≥ 0, default 0) in the
+	 * favorable (limit) / trigger (stop) direction; 0 = reference is the signal
+	 * close itself (original 'limit'/'stop' behaviour, unchanged).
+	 *
 	 * - 'market': unchanged — delegates to `resolveFill` (next-bar open by default).
-	 * - 'limit' (better price): LONG fills only if next.low ≤ ref, at min(next.open, ref);
-	 *   SHORT fills only if next.high ≥ ref, at max(next.open, ref). A gap through the
-	 *   limit fills at the (better) open.
-	 * - 'stop' (worse price / breakout): LONG fills only if next.high ≥ ref, at
-	 *   max(next.open, ref); SHORT fills only if next.low ≤ ref, at min(next.open, ref).
-	 *   A gap through the stop fills at the open.
+	 * - 'limit' (better price): limit = close × (1 ∓ off) (long below / short above).
+	 *   LONG fills only if next.low ≤ limit, at min(next.open, limit); SHORT fills
+	 *   only if next.high ≥ limit, at max(next.open, limit). A gap through fills at the
+	 *   (better) open.
+	 * - 'stop' (worse price / breakout): trigger = close × (1 ± off) (long above /
+	 *   short below). LONG fills only if next.high ≥ trigger, at max(next.open, trigger);
+	 *   SHORT fills only if next.low ≤ trigger, at min(next.open, trigger). A gap
+	 *   through fills at the open.
+	 * - 'stopLimit': a stop trigger (as 'stop') with a limit CAP one further offset
+	 *   BEYOND it (cap = trigger × (1 ± off) — a SECOND `limitOffsetPercent` band).
+	 *   LONG: fills only if next.high ≥ trigger AND the would-be fill max(next.open,
+	 *   trigger) ≤ cap, at min(max(next.open, trigger), cap). SHORT mirrors. If
+	 *   triggered but the price gaps past the cap → no fill (expires).
+	 * - 'moc' (market-on-close): always fills at next bar's CLOSE (if a next bar exists).
+	 * - 'loc' (limit-on-close): fills at next bar's CLOSE only if it satisfies the
+	 *   limit (LONG: next.close ≤ limit; SHORT: next.close ≥ limit); else expires.
 	 */
 	function resolveEntryFill(
 		td: TickerData,
@@ -935,33 +955,74 @@ export function runBacktest(
 	): { price: number; time: string; barIndex: number } | null {
 		if (orderType === 'market') return resolveFill(td, idx);
 
-		// limit/stop are inherently next-bar mechanics: reference = signal close at
+		// All remaining types are next-bar mechanics: reference = signal close at
 		// `idx`, decision against the immediately following bar.
 		const next = idx + 1;
 		if (next >= td.candles.length) return null; // no bar to fill on → expire
 		const ref = td.candles[idx].c;
 		const bar = td.candles[next];
+		// Offset as a fraction of the signal close (≥ 0; 0 keeps the reference at close).
+		const off = limitOffsetPercent / 100;
 
 		let price: number;
 		switch (orderType) {
 			case 'limit': {
 				if (side === 'long') {
-					if (bar.l > ref) return null; // never dipped to the limit → expire
-					price = Math.min(bar.o, ref); // gap-down fills at the better open
+					const limit = ref * (1 - off); // rest below the close
+					if (bar.l > limit) return null; // never dipped to the limit → expire
+					price = Math.min(bar.o, limit); // gap-down fills at the better open
 				} else {
-					if (bar.h < ref) return null; // never rose to the limit → expire
-					price = Math.max(bar.o, ref);
+					const limit = ref * (1 + off); // rest above the close
+					if (bar.h < limit) return null; // never rose to the limit → expire
+					price = Math.max(bar.o, limit);
 				}
 				break;
 			}
 			case 'stop': {
 				if (side === 'long') {
-					if (bar.h < ref) return null; // never broke out up → expire
-					price = Math.max(bar.o, ref); // gap-up fills at the open
+					const trigger = ref * (1 + off); // break out above the close
+					if (bar.h < trigger) return null; // never broke out up → expire
+					price = Math.max(bar.o, trigger); // gap-up fills at the open
 				} else {
-					if (bar.l > ref) return null; // never broke down → expire
-					price = Math.min(bar.o, ref);
+					const trigger = ref * (1 - off); // break down below the close
+					if (bar.l > trigger) return null; // never broke down → expire
+					price = Math.min(bar.o, trigger);
 				}
+				break;
+			}
+			case 'stopLimit': {
+				if (side === 'long') {
+					const trigger = ref * (1 + off);
+					const cap = trigger * (1 + off); // limit cap one further offset beyond
+					if (bar.h < trigger) return null; // never triggered → expire
+					const wouldFill = Math.max(bar.o, trigger);
+					if (wouldFill > cap) return null; // gapped past the cap → expire
+					price = wouldFill;
+				} else {
+					const trigger = ref * (1 - off);
+					const cap = trigger * (1 - off);
+					if (bar.l > trigger) return null; // never triggered → expire
+					const wouldFill = Math.min(bar.o, trigger);
+					if (wouldFill < cap) return null; // gapped past the cap → expire
+					price = wouldFill;
+				}
+				break;
+			}
+			case 'moc': {
+				// Decide at idx's close to submit a market-on-close for the next session;
+				// it fills at that session's CLOSE unconditionally.
+				price = bar.c;
+				break;
+			}
+			case 'loc': {
+				if (side === 'long') {
+					const limit = ref * (1 - off);
+					if (bar.c > limit) return null; // close above the limit → expire
+				} else {
+					const limit = ref * (1 + off);
+					if (bar.c < limit) return null; // close below the limit → expire
+				}
+				price = bar.c;
 				break;
 			}
 			default:

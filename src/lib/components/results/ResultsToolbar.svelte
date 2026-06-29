@@ -4,6 +4,7 @@
 		FileCsv,
 		FileXls,
 		FileHtml,
+		FilePdf,
 		BracketsCurly,
 		CaretDown,
 		SpinnerGap
@@ -15,7 +16,8 @@
 		exportCsv,
 		exportXlsx,
 		exportResultJson,
-		exportTearsheet
+		exportTearsheet,
+		printTearsheet
 	} from '$lib/export';
 
 	interface Props {
@@ -98,6 +100,16 @@
 			error = e instanceof Error ? e.message : 'Tearsheet export failed.';
 		}
 	}
+
+	function onPdf() {
+		error = null;
+		close();
+		try {
+			printTearsheet(result);
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'PDF export failed.';
+		}
+	}
 </script>
 
 <div class="toolbar">
@@ -152,6 +164,13 @@
 					<span class="lines">
 						<span class="t">Tearsheet</span>
 						<span class="s">Standalone HTML report</span>
+					</span>
+				</button>
+				<button type="button" role="menuitem" class="item" onclick={onPdf}>
+					<FilePdf size={17} />
+					<span class="lines">
+						<span class="t">PDF</span>
+						<span class="s">Print tearsheet (Save as PDF)</span>
 					</span>
 				</button>
 			</div>

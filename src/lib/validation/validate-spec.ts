@@ -564,4 +564,28 @@ function validateExecution(spec: StrategySpec, capabilities: Capabilities, ctx: 
 			`Order type "${spec.execution.orderType}" is not supported.`
 		);
 	}
+	// §5 Limit/stop offset: a percentage ≥ 0. 0/undefined keeps the reference at the
+	// signal close (plain limit/stop back-compat). It is only consulted by the
+	// price-conditioned order types; with `market`/`moc` it has no effect → warned.
+	const off = spec.execution.limitOffsetPercent;
+	if (off !== undefined) {
+		if (!(off >= 0)) {
+			add(ctx, 'error', 'execution.limitOffsetPercent', 'Limit offset cannot be negative.');
+		} else if (
+			off > 0 &&
+			(spec.execution.orderType === 'market' || spec.execution.orderType === 'moc')
+		) {
+			add(
+				ctx,
+				'warning',
+				'execution.limitOffsetPercent',
+				`A limit offset has no effect on "${spec.execution.orderType}" orders.`
+			);
+		}
+	}
+	// §5 stopLimit/loc semantics note: stopLimit requires the next bar to trigger AND
+	// the fill to stay within the cap band (a SECOND `limitOffsetPercent` beyond the
+	// trigger) — a gap past the cap expires unfilled. loc only fills at the next
+	// bar's close when that close satisfies the limit (else it expires). Both are
+	// good-for-next-bar only and never rest across multiple bars.
 }

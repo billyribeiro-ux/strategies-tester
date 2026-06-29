@@ -464,6 +464,16 @@ export class StrategyStore {
 	};
 
 	/**
+	 * Set the limit/stop offset (percent, §5). A non-positive or NaN value clears it
+	 * (undefined = reference is the signal close, plain limit/stop back-compat).
+	 */
+	setLimitOffsetPercent = (pct: number | undefined) => {
+		this.spec.execution.limitOffsetPercent =
+			typeof pct === 'number' && Number.isFinite(pct) && pct > 0 ? pct : undefined;
+		this.markDirty();
+	};
+
+	/**
 	 * Set the liquidity cap (max % of bar volume, §2.3). A non-positive or NaN
 	 * value clears the cap (undefined = uncapped).
 	 */

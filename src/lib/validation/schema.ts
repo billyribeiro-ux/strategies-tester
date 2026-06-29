@@ -229,7 +229,10 @@ const riskSchema = z.object({
 
 const executionSchema = z.object({
 	fillOn: z.enum(['nextOpen', 'close', 'signalPrice']),
-	orderType: z.enum(['market', 'limit', 'stop']),
+	orderType: z.enum(['market', 'limit', 'stop', 'stopLimit', 'moc', 'loc']),
+	// §5 Limit/stop offset, in percent (≥ 0). 0/undefined = reference is the signal
+	// close (back-compat for plain limit/stop). Semantics live in validate-spec.ts.
+	limitOffsetPercent: z.number().min(0).optional(),
 	maxBarVolumePct: z.number().gt(0).max(100).optional()
 });
 

@@ -751,6 +751,103 @@ describe('runBacktest — limit & stop entry orders (§5)', () => {
 		expect(result.trades.length).toBe(1);
 		expect(result.trades[0].entryPrice).toBe(108); // open of fill bar, not the limit
 	});
+
+	it('limitOffsetPercent shifts a plain limit fill (long)', () => {
+		// ref = 106; off 2% ⇒ limit = 106 × 0.98 = 103.88. Next bar dips to low 103
+		// (≤ limit) and opens 108 (> limit): fills at min(open 108, limit 103.88) = 103.88.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'limit', limitOffsetPercent: 2 }
+		});
+		const result = runBacktest(spec, { TEST: longSeries([108, 109, 103, 107]) });
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].entryPrice).toBeCloseTo(103.88, 6);
+	});
+
+	it('stopLimit (long): fills when triggered within the cap band', () => {
+		// ref = 106; off 1% ⇒ trigger = 107.06, cap = 107.06 × 1.01 = 108.1306.
+		// Next bar opens 105 (< trigger), breaks up to high 108 (≥ trigger):
+		// wouldFill = max(open 105, trigger 107.06) = 107.06 ≤ cap → fills at 107.06.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'stopLimit', limitOffsetPercent: 1 }
+		});
+		const data = { TEST: longSeries([105, 108, 104, 107]) };
+		const result = runBacktest(spec, data);
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].entryPrice).toBeCloseTo(107.06, 6);
+		expect(result.trades[0].entryTime).toBe(data.TEST[3].t);
+	});
+
+	it('stopLimit (long): expires when it gaps past the cap', () => {
+		// ref = 106; off 1% ⇒ trigger = 107.06, cap = 108.1306. Next bar gaps up:
+		// open 109 (> cap), high 110. wouldFill = max(109, 107.06) = 109 > cap → expires.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'stopLimit', limitOffsetPercent: 1 }
+		});
+		const result = runBacktest(spec, { TEST: longSeries([109, 110, 108, 109]) });
+		expect(result.trades.length).toBe(0);
+	});
+
+	it('moc (market-on-close): fills at the next bar close', () => {
+		// ref = 106. MOC always fills (a next bar exists) at the fill bar's CLOSE (107),
+		// regardless of where the bar opened/traded.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'moc' }
+		});
+		const data = { TEST: longSeries([108, 109, 104, 107]) };
+		const result = runBacktest(spec, data);
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].entryPrice).toBe(107); // next bar close, not its open (108)
+		expect(result.trades[0].entryTime).toBe(data.TEST[3].t);
+	});
+
+	it('loc (limit-on-close): fills when the next close is within the limit (long)', () => {
+		// ref = 106 (off 0 ⇒ limit = 106). Next bar closes 105 (≤ limit) → fills at 105.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'loc' }
+		});
+		const result = runBacktest(spec, { TEST: longSeries([108, 109, 103, 105]) });
+		expect(result.trades.length).toBe(1);
+		expect(result.trades[0].entryPrice).toBe(105);
+	});
+
+	it('loc (limit-on-close): expires when the next close is above the limit (long)', () => {
+		// ref = 106 (limit = 106). Next bar closes 108 (> limit) → order expires unfilled.
+		const spec = baseSpec({
+			rules: longCrossRules,
+			execution: { fillOn: 'nextOpen', orderType: 'loc' }
+		});
+		const result = runBacktest(spec, { TEST: longSeries([108, 109, 104, 108]) });
+		expect(result.trades.length).toBe(0);
+	});
+
+	it('stopLimit, moc & loc entries are leak-free (gate passes over a zigzag series)', () => {
+		// Run the engine-agnostic leak gate against the new order types on a series
+		// that crosses 105 repeatedly, so many orders fill and settle.
+		const closes = Array.from({ length: 60 }, (_, i) => 105 + Math.sin(i / 2) * 7);
+		const data = { TEST: candles(closes) };
+		const rules = {
+			longEntry: group('AND', [binary(price('close'), 'crossover', constant(105))]),
+			longExit: group('AND', [binary(price('close'), 'crossunder', constant(105))]),
+			shortEntry: emptyGroup(),
+			shortExit: emptyGroup()
+		};
+		for (const orderType of ['stopLimit', 'moc', 'loc'] as const) {
+			expect(() =>
+				assertNoLookahead(
+					baseSpec({
+						rules,
+						execution: { fillOn: 'nextOpen', orderType, limitOffsetPercent: 1 }
+					}),
+					data
+				)
+			).not.toThrow();
+		}
+	});
 });
 
 describe('runBacktest — portfolio heat cap (§5)', () => {

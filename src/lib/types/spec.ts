@@ -427,14 +427,56 @@ export interface Risk {
  * - `signalPrice`: fill at the operand/price that produced the signal.
  */
 export type FillModel = 'nextOpen' | 'close' | 'signalPrice';
-export type OrderType = 'market' | 'limit' | 'stop';
+
+/**
+ * Entry order type (spec §5). Decisions use the SIGNAL bar's close (the reference,
+ * known at index ≤ idx); the order is resolved against ONLY the NEXT bar (idx+1),
+ * so every type is leak-free. The default `market` is unchanged.
+ *
+ * - `market`: fill at the next bar (the configured `fillOn` price; default open).
+ * - `limit`: rest a better-price limit for the next bar. LONG fills only if
+ *   next.low ≤ limit, at min(next.open, limit); SHORT mirrors. With `limitOffsetPercent`
+ *   the limit sits that % BELOW (long) / ABOVE (short) the signal close (default 0 = at close).
+ * - `stop`: rest a breakout stop for the next bar. LONG fills only if next.high ≥ trigger,
+ *   at max(next.open, trigger); SHORT mirrors. `limitOffsetPercent` moves the trigger that %
+ *   ABOVE (long) / BELOW (short) the signal close (default 0 = at close).
+ * - `stopLimit`: a stop TRIGGER (close × (1 ± off)) with a limit CAP one further
+ *   offset BEYOND it (cap = trigger × (1 ± off) — a SECOND band of `limitOffsetPercent`).
+ *   LONG: fills only if next.high ≥ trigger AND the would-be fill max(next.open, trigger) ≤ cap,
+ *   at min(max(next.open, trigger), cap); SHORT mirrors. A gap past the cap → no fill (expires).
+ * - `moc` (market-on-close): always fills (if a next bar exists) at next bar's CLOSE.
+ * - `loc` (limit-on-close): fills at next bar's CLOSE only if it satisfies the limit
+ *   (LONG: next.close ≤ close × (1 − off/100); SHORT: next.close ≥ close × (1 + off/100));
+ *   otherwise expires.
+ */
+export type OrderType = 'market' | 'limit' | 'stop' | 'stopLimit' | 'moc' | 'loc';
 
 export const FILL_MODELS: readonly FillModel[] = ['nextOpen', 'close', 'signalPrice'] as const;
-export const ORDER_TYPES: readonly OrderType[] = ['market', 'limit', 'stop'] as const;
+export const ORDER_TYPES: readonly OrderType[] = [
+	'market',
+	'limit',
+	'stop',
+	'stopLimit',
+	'moc',
+	'loc'
+] as const;
 
 export interface Execution {
 	fillOn: FillModel;
 	orderType: OrderType;
+	/**
+	 * Limit / stop offset, in percent (≥ 0, default 0). The order's reference price
+	 * is the SIGNAL bar's close, shifted by this % in the favorable (limit) /
+	 * trigger (stop) direction:
+	 * - `limit`: LONG limit = close × (1 − off/100); SHORT limit = close × (1 + off/100).
+	 * - `stop`: LONG trigger = close × (1 + off/100); SHORT trigger = close × (1 − off/100).
+	 * - `stopLimit`: trigger as for `stop`, PLUS a limit cap one further offset beyond
+	 *   the trigger (cap = trigger × (1 ± off/100) — a SECOND band of this same percent).
+	 * - `loc`: LONG limit = close × (1 − off/100); SHORT limit = close × (1 + off/100).
+	 * `0` (or undefined) means the reference is the signal close itself, preserving the
+	 * original `limit`/`stop` behaviour exactly. Ignored by `market` and `moc`.
+	 */
+	limitOffsetPercent?: number;
 	/**
 	 * Liquidity cap (§2.3): max share of a bar's volume a single fill may take,
 	 * as a percentage in (0, 100]. Caps filled qty at `floor(bar.volume * pct/100)`.
@@ -442,6 +484,16 @@ export interface Execution {
 	 */
 	maxBarVolumePct?: number;
 }
+
+/**
+ * §5 Bracket / OCO: a configured entry (`Execution.orderType`) combined with a
+ * non-'none' `Risk.stopLoss` and `Risk.takeProfit` already forms a BRACKET order —
+ * the entry fills, then the stop and target bracket the position. The two
+ * protective legs are mutually exclusive (one-cancels-other): the engine checks
+ * them intrabar each bar and the FIRST to trigger fully closes the position (stop
+ * takes precedence when both could fire in the same bar — conservative), so the
+ * other is implicitly cancelled. No separate OCO order type is needed.
+ */
 
 // ---------------------------------------------------------------------------
 // Top-level spec

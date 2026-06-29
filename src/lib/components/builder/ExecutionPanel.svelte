@@ -20,8 +20,15 @@
 	const ORDER_LABELS: Record<OrderType, string> = {
 		market: 'Market',
 		limit: 'Limit',
-		stop: 'Stop'
+		stop: 'Stop',
+		stopLimit: 'Stop-limit',
+		moc: 'Market-on-close',
+		loc: 'Limit-on-close'
 	};
+
+	// Order types whose reference price is shifted by the limit offset (§5). Market
+	// and market-on-close ignore it.
+	const OFFSET_ORDER_TYPES: readonly OrderType[] = ['limit', 'stop', 'stopLimit', 'loc'];
 
 	function fillLabel(m: FillModel): string {
 		switch (m) {
@@ -42,6 +49,9 @@
 	);
 
 	const fillOn = $derived(store.spec.execution.fillOn);
+	const orderType = $derived(store.spec.execution.orderType);
+	const showOffset = $derived(OFFSET_ORDER_TYPES.includes(orderType));
+	const limitOffset = $derived(store.spec.execution.limitOffsetPercent ?? 0);
 	const liquidityCap = $derived(store.spec.execution.maxBarVolumePct ?? 0);
 </script>
 
@@ -73,6 +83,19 @@
 			options={orderOptions}
 			bind:value={() => store.spec.execution.orderType, (v) => store.setOrderType(v as OrderType)}
 		/>
+
+		{#if showOffset}
+			<NumberInput
+				label="Limit / stop offset"
+				hint="Shifts the order reference off the signal close, favorable for limit/loc, trigger direction for stop. Stop-limit uses a second band beyond the trigger as the fill cap. 0 = at the close."
+				min={0}
+				step={0.1}
+				suffix="%"
+				bind:value={
+					() => limitOffset, (pct) => store.setLimitOffsetPercent(pct > 0 ? pct : undefined)
+				}
+			/>
+		{/if}
 
 		<NumberInput
 			label="Max % of bar volume (liquidity cap)"
