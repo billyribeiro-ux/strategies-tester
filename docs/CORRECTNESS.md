@@ -75,7 +75,7 @@ Verified against `engine.ts` + `evaluate.ts`, each claim backed by a test.
 | 2.3 | Liquidity cap (% of bar volume)                             | ✅            | `execution.maxBarVolumePct` caps fill qty at `floor(bar.volume × pct/100)`; warns once per run (G2 closed)                                                                                                                                            |
 | 2.4 | Survivorship-free PIT universe                              | ✅            | `server/universe/` — explicit + FMP PIT providers (delisted names, coverage gaps); usable in the `/universe` explorer **and** wired into runs via `universe.source` (G3 closed)                                                                       |
 | 2.5 | Corporate actions (PIT)                                     | ✅            | daily fetch uses FMP's **dividend-adjusted** EOD endpoint; `applyAdjustment` prefers adjusted OHLC or scales by `adjClose/close`; weekly/monthly inherit it (G4 closed)                                                                               |
-| 2.6 | Correct accounting (integer sizing, cash, sessions)         | ✅ mostly     | integer `floor` sizing, long/short cash settlement, session filter, heat cap + drawdown circuit-breaker; full margin/leverage not modeled (G5)                                                                                                        |
+| 2.6 | Correct accounting (integer sizing, cash, sessions)         | ✅ mostly     | integer `floor` sizing, long/short cash settlement, session filter, heat cap + drawdown circuit-breaker + **leverage cap & margin interest**; cross-margin/HTB tiers not modeled (G5)                                                                 |
 | 2.7 | Determinism                                                 | ✅ **proven** | determinism test in `engine.spec.ts`; seeded RNG for all Monte-Carlo; only `runId`/`computedAt` vary                                                                                                                                                  |
 
 ### Known correctness gaps (tracked)
@@ -87,8 +87,9 @@ Verified against `engine.ts` + `evaluate.ts`, each claim backed by a test.
 - **G3 — survivorship-free PIT universe.** ✅ **Closed** — explicit + FMP PIT providers,
   wired into runs (`universe.source`), coverage gaps surfaced.
 - **G4 — corporate actions.** ✅ **Closed** — dividend-adjusted EOD + `applyAdjustment`.
-- **G5 — margin / leverage.** 🟡 Partial — short borrow cost modeled; full margin /
-  portfolio financing / hard-to-borrow not yet.
+- **G5 — margin / leverage.** ✅ **Closed** — short borrow cost, **leverage cap**
+  (gross exposure ≤ equity × maxLeverage) and **margin interest** on attributed
+  borrowed cash. (Hard-to-borrow tiers / cross-margin not modeled.)
 
 ---
 
@@ -96,16 +97,16 @@ Verified against `engine.ts` + `evaluate.ts`, each claim backed by a test.
 
 Status: ✅ done · 🟡 partial · ⬜ not started
 
-| Phase  | Scope                                                                                                                   | Status                                                                                                                                                                                                           |
-| ------ | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1     | Data layer: FMP adapter, PIT store, all timeframes (incl. resampled W/M), corporate actions, survivorship-free universe | ✅ adapter + intraday/daily + weekly/**monthly** resample + cache + **dividend-adjusted** prices + **PIT universe (explicit + FMP), wired into runs**                                                            |
-| P2     | Correctness core + event-driven engine + fill/cost model                                                                | ✅ point-in-time + next-bar-open (proven) + slippage/commission/borrow + **liquidity cap** + **limit/stop orders** (bracket/OCO/stop-limit ⬜)                                                                   |
-| P3     | Rule builder: indicators, operator grammar, rule-tree JSON, **closed-bar** eval                                         | ✅ registry indicators + nestable AND/OR + cross/compare/unary/range + **aggregate/persistence/sequence** + **multi-timeframe refs** + **scale-out/partial-profit**; re-entry ⬜                                 |
-| P4     | Execution: order types, sizing, risk controls                                                                           | ✅ market/limit/stop fills, sizing (fixed/notional/%eq/risk/**vol-target/fractional-Kelly**), stops/targets/trailing/**time**, pyramiding, **heat cap + drawdown circuit-breaker**; sector/correlation limits ⬜ |
-| **P5** | **Validation suite (§6) + analytics (§7)**                                                                              | ✅ **LEAK GATE**, walk-forward, **CPCV (purge+embargo), DSR, PBO (CSCV), Monte-Carlo null baseline, parameter-plateau**; analytics (CVaR/ulcer/Calmar/Omega/attribution/regime) — wired into the UI              |
-| P6     | Optimization with walk-forward baked in                                                                                 | ✅ grid + **random** + **genetic** + **Bayesian (TPE)** + robust objectives (OOS-deflated proxy) + anchored walk-forward                                                                                         |
-| P7     | Reporting/tearsheets + paper-trade/forward bridge                                                                       | ✅ charts + CSV/Excel/JSON + **HTML tearsheet** + **paper-trade/forward bridge** + divergence monitor; PDF export + live broker ⬜                                                                               |
-| P8     | Platform: reproducibility, experiment tracking, **audit records**                                                       | ✅ versioned runs + **per-result audit record** (fill model, costs, liquidity cap, data assumptions) + determinism                                                                                               |
+| Phase  | Scope                                                                                                                   | Status                                                                                                                                                                                                                                           |
+| ------ | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| P1     | Data layer: FMP adapter, PIT store, all timeframes (incl. resampled W/M), corporate actions, survivorship-free universe | ✅ adapter + intraday/daily + weekly/**monthly** resample + cache + **dividend-adjusted** prices + **PIT universe (explicit + FMP), wired into runs**                                                                                            |
+| P2     | Correctness core + event-driven engine + fill/cost model                                                                | ✅ point-in-time + next-bar-open (proven) + slippage/commission/borrow + **liquidity cap** + **limit/stop orders** (bracket/OCO/stop-limit ⬜)                                                                                                   |
+| P3     | Rule builder: indicators, operator grammar, rule-tree JSON, **closed-bar** eval                                         | ✅ registry indicators + nestable AND/OR + cross/compare/unary/range + **aggregate/persistence/sequence** + **multi-timeframe refs** + **scale-out/partial-profit**; re-entry ⬜                                                                 |
+| P4     | Execution: order types, sizing, risk controls                                                                           | ✅ market/limit/stop fills, sizing (fixed/notional/%eq/risk/**vol-target/fractional-Kelly**), stops/targets/trailing/**time**, pyramiding, **heat cap + drawdown circuit-breaker + correlation limit + leverage/margin**; sector-level limits ⬜ |
+| **P5** | **Validation suite (§6) + analytics (§7)**                                                                              | ✅ **LEAK GATE**, walk-forward, **CPCV (purge+embargo), DSR, PBO (CSCV), Monte-Carlo null baseline, parameter-plateau**; analytics (CVaR/ulcer/Calmar/Omega/attribution/regime) — wired into the UI                                              |
+| P6     | Optimization with walk-forward baked in                                                                                 | ✅ grid + **random** + **genetic** + **Bayesian (TPE)** + robust objectives (OOS-deflated proxy) + anchored walk-forward                                                                                                                         |
+| P7     | Reporting/tearsheets + paper-trade/forward bridge                                                                       | ✅ charts + CSV/Excel/JSON + **HTML tearsheet** + **paper-trade/forward bridge** + divergence monitor; PDF export + live broker ⬜                                                                                                               |
+| P8     | Platform: reproducibility, experiment tracking, **audit records**                                                       | ✅ versioned runs + **per-result audit record** (fill model, costs, liquidity cap, data assumptions) + determinism                                                                                                                               |
 
 ### The gates (no result is "trusted" until these pass)
 
@@ -119,8 +120,10 @@ Status: ✅ done · 🟡 partial · ⬜ not started
 
 ### Remaining (niche / future)
 
-Bracket-OCO/stop-limit/MOC-LOC order types · re-entry lifecycle · sector & correlation
-exposure limits · full margin/leverage & hard-to-borrow · PDF tearsheet · a live broker adapter.
+Bracket-OCO/stop-limit/MOC-LOC order types · re-entry lifecycle · sector-level exposure
+limits (needs point-in-time sector classification data) · hard-to-borrow tiers & cross-margin ·
+PDF tearsheet (HTML tearsheet prints to PDF meanwhile) · a live broker adapter (the paper
+bridge already runs the same engine on live data).
 
 ---
 
